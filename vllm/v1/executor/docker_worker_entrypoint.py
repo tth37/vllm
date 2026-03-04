@@ -235,7 +235,9 @@ def main():
         handle_b64 = base64.b64encode(handle_bytes).decode('utf-8')
 
         # Write handle to file that executor can read
-        handle_file = f"/tmp/vllm_worker_response_handle_{rank}.txt"
+        # In Docker mode, use shared volume. In subprocess mode, use /tmp
+        shared_volume = os.environ.get("VLLM_DOCKER_SHARED_VOLUME", "/tmp")
+        handle_file = f"{shared_volume}/worker_response_handle_{rank}.txt"
         with open(handle_file, 'w') as f:
             f.write(handle_b64)
         logger.info(f"Exported response handle to {handle_file}")

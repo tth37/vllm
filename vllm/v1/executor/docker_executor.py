@@ -50,9 +50,15 @@ class DockerDistributedExecutor(Executor):
     Spawns each worker in a separate Docker container instead of
     a separate process. Uses network-based communication for both
     control plane (ZMQ) and data plane (NCCL).
+
+    In Docker mode, uses a shared volume for handle exchange.
+    In subprocess mode (VLLM_DOCKER_EXECUTOR_USE_SUBPROCESS=1), uses /tmp files.
     """
 
     supports_pp: bool = True
+
+    # Shared volume for handle exchange in Docker mode
+    _DOCKER_SHARED_VOLUME = "/tmp/vllm_docker_shared"
 
     def __init__(self, vllm_config: VllmConfig, monitor_workers: bool = True):
         self.monitor_workers = monitor_workers
@@ -244,12 +250,13 @@ class DockerDistributedExecutor(Executor):
         env["PYTHONUNBUFFERED"] = "1"
         env["CUDA_VISIBLE_DEVICES"] = str(local_rank)  # Restrict GPU access
 
-        # Add vllm-source to PYTHONPATH
+        # Add vllm-source to PYTHONPATH and set shared volume for handle exchange
         vllm_source_path = "/home/thd/repositories/vllm-dev/vllm-source"
         if "PYTHONPATH" in env:
             env["PYTHONPATH"] = f"{vllm_source_path}:{env['PYTHONPATH']}"
         else:
             env["PYTHONPATH"] = vllm_source_path
+        env["VLLM_DOCKER_SHARED_VOLUME"] = self._DOCKER_SHARED_VOLUME
 
         logger.info(f"Starting worker {rank} in subprocess (debug mode) '{worker_name}'")
 
@@ -263,7 +270,7 @@ class DockerDistributedExecutor(Executor):
                     f"VLLM_WORKER_RANK={rank}, VLLM_WORLD_SIZE={self.world_size}")
 
         # Redirect stdout/stderr to files to avoid pipe buffer deadlock
-        log_dir = "/tmp/vllm_docker_executor_logs"
+        log_dir = f"{self._DOCKER_SHARED_VOLUME}/logs"
         os.makedirs(log_dir, exist_ok=True)
         stdout_file = open(f"{log_dir}/worker_{rank}_stdout.log", "w")
         stderr_file = open(f"{log_dir}/worker_{rank}_stderr.log", "w")
@@ -285,9 +292,9 @@ class DockerDistributedExecutor(Executor):
             # Process exited immediately - capture output from files
             stdout_file.close()
             stderr_file.close()
-            with open(f"{log_dir}/worker_{rank}_stdout.log", "r") as f:
+            with open(f"{self._DOCKER_SHARED_VOLUME}/logs/worker_{rank}_stdout.log", "r") as f:
                 stdout = f.read()
-            with open(f"{log_dir}/worker_{rank}_stderr.log", "r") as f:
+            with open(f"{self._DOCKER_SHARED_VOLUME}/logs/worker_{rank}_stderr.log", "r") as f:
                 stderr = f.read()
             raise RuntimeError(
                 f"Worker {rank} subprocess (PID: {process.pid}) "
@@ -300,7 +307,7 @@ class DockerDistributedExecutor(Executor):
 
         # Wait for worker to export its response handle
         # The worker writes the handle to a file after initialization
-        handle_file = f"/tmp/vllm_worker_response_handle_{rank}.txt"
+        handle_file = f"{self._DOCKER_SHARED_VOLUME}/worker_response_handle_{rank}.txt"
         response_handle_b64 = None
         for _ in range(60):  # Wait up to 60 seconds
             if os.path.exists(handle_file):
@@ -314,9 +321,10 @@ class DockerDistributedExecutor(Executor):
             if process.poll() is not None:
                 stdout_file.close()
                 stderr_file.close()
-                with open(f"{log_dir}/worker_{rank}_stdout.log", "r") as f:
+                log_base = f"{self._DOCKER_SHARED_VOLUME}/logs"
+                with open(f"{log_base}/worker_{rank}_stdout.log", "r") as f:
                     stdout = f.read()
-                with open(f"{log_dir}/worker_{rank}_stderr.log", "r") as f:
+                with open(f"{log_base}/worker_{rank}_stderr.log", "r") as f:
                     stderr = f.read()
                 raise RuntimeError(
                     f"Worker {rank} subprocess exited before exporting handle.\n"
@@ -358,7 +366,12 @@ class DockerDistributedExecutor(Executor):
         scheduler_output_handle: Handle,
         is_driver_worker: bool,
     ) -> DockerWorkerHandle:
-        """Start a worker in a Docker container."""
+        """Start a worker in a Docker container.
+
+        Uses a shared Docker volume for handle exchange between the executor
+        (host) and worker (container). This allows bidirectional communication
+        without requiring the executor to be in a container.
+        """
         import json
 
         container_name = f"vllm-worker-{rank}"
@@ -371,6 +384,10 @@ class DockerDistributedExecutor(Executor):
         config_dict = self._serialize_vllm_config()
         config_b64 = base64.b64encode(json.dumps(config_dict).encode()).decode('utf-8')
 
+        # Create shared volume path for this worker
+        shared_volume = self._DOCKER_SHARED_VOLUME
+        os.makedirs(shared_volume, exist_ok=True)
+
         # Build docker run command
         # Note: We intentionally don't use --rm so that failed containers can be
         # inspected with 'docker logs' for debugging purposes
@@ -381,6 +398,7 @@ class DockerDistributedExecutor(Executor):
             "--name", container_name,
             "--gpus", f"device={local_rank}",
             "--network", "host",  # Use host network for simplicity
+            "-v", f"{shared_volume}:{shared_volume}",  # Shared volume for handle exchange
             "-e", f"VLLM_WORKER_RANK={rank}",
             "-e", f"VLLM_WORKER_LOCAL_RANK={local_rank}",
             "-e", f"VLLM_WORLD_SIZE={self.world_size}",
@@ -389,6 +407,7 @@ class DockerDistributedExecutor(Executor):
             "-e", f"VLLM_DISTRIBUTED_INIT_METHOD={self.distributed_init_method}",
             "-e", f"VLLM_CONFIG={config_b64}",
             "-e", f"VLLM_IS_DRIVER_WORKER={str(is_driver_worker).lower()}",
+            "-e", f"VLLM_DOCKER_SHARED_VOLUME={shared_volume}",
             "-e", "NCCL_SOCKET_IFNAME=eth0",  # Adjust as needed
             "-e", "NCCL_DEBUG=WARN",
             "-e", "PYTHONUNBUFFERED=1",
@@ -452,15 +471,40 @@ class DockerDistributedExecutor(Executor):
 
         logger.info(f"Worker {rank} container confirmed running")
 
-        # Create a response MQ for this worker
-        # Workers will connect to this
-        response_mq = MessageQueue(
-            n_reader=1,
-            n_local_reader=0,  # Remote only
-            max_chunk_bytes=envs.VLLM_MQ_MAX_CHUNK_BYTES_MB * 1024 * 1024,
-            max_chunks=10,
-            connect_ip=self.host_ip,
-        )
+        # Wait for worker to export its response handle via shared volume
+        handle_file = f"{shared_volume}/worker_response_handle_{rank}.txt"
+        response_handle_b64 = None
+        for _ in range(60):  # Wait up to 60 seconds
+            if os.path.exists(handle_file):
+                with open(handle_file, 'r') as f:
+                    response_handle_b64 = f.read().strip()
+                break
+            time.sleep(1)
+
+        if response_handle_b64 is None:
+            # Worker didn't write handle file - check container status
+            check_result = subprocess.run(
+                ['docker', 'inspect', '-f', '{{.State.Status}}', container_name],
+                capture_output=True, text=True
+            )
+            container_status = check_result.stdout.strip() if check_result.returncode == 0 else "unknown"
+            raise RuntimeError(
+                f"Timeout waiting for worker {rank} to export response handle.\n"
+                f"Container status: {container_status}\n"
+                f"Check 'docker logs {container_name}' for details."
+            )
+
+        # Deserialize the handle
+        response_handle_bytes = base64.b64decode(response_handle_b64)
+        response_handle = pickle.loads(response_handle_bytes)
+        logger.info(f"Got response handle from worker {rank}: {response_handle.remote_subscribe_addr}")
+
+        # Create a connection to the worker's response MQ
+        # The worker creates the MQ with n_reader=1 (expecting the executor to read)
+        # We connect as rank 0 (the reader) since we dequeue responses
+        logger.info(f"Connecting to worker {rank} response MQ as reader...")
+        response_mq = MessageQueue.create_from_handle(response_handle, 0)
+        logger.info(f"Connected to worker {rank} response MQ")
 
         return DockerWorkerHandle(
             container_name=container_name,
