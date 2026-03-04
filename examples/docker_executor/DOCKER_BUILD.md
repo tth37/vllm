@@ -6,7 +6,9 @@ This directory contains Docker-related files for the DockerDistributedExecutor i
 
 - `Dockerfile.docker-executor` - Builds vLLM from local source using uv (official recommended method)
 - `build-docker-executor.sh` - Build script
-- `DOCKER_BUILD.md` - This documentation
+- `test_docker_executor.py` - Test/example script
+- `README.md` - Full documentation
+- `DOCKER_BUILD.md` - This file
 
 ## Prerequisites
 
@@ -18,8 +20,17 @@ This directory contains Docker-related files for the DockerDistributedExecutor i
 
 ### Quick Build
 
+From the vLLM source root:
+
 ```bash
-cd /home/thd/repositories/vllm-dev/vllm-source
+cd /path/to/vllm-source
+./examples/docker_executor/build-docker-executor.sh
+```
+
+Or from this directory:
+
+```bash
+cd examples/docker_executor
 ./build-docker-executor.sh
 ```
 

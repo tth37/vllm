@@ -80,16 +80,27 @@ if ! docker inspect "nvidia/cuda:12.1.0-devel-ubuntu22.04" &> /dev/null; then
     echo "  2. Use a different base image that is available locally"
 fi
 
+# Determine build context (repo root)
+SCRIPT_DIR="$(dirname "$0")"
+if [ -f "$SCRIPT_DIR/../../vllm/__init__.py" ]; then
+    # Running from examples/docker_executor/
+    BUILD_CONTEXT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+else
+    # Running from repo root
+    BUILD_CONTEXT="$(pwd)"
+fi
+
 # Build the custom image
 echo ""
 echo -e "${YELLOW}Building image: $TARGET_IMAGE${NC}"
+echo "Build context: $BUILD_CONTEXT"
 echo "This may take several minutes..."
 echo ""
 
 if docker build \
     -t "$TARGET_IMAGE" \
     -f "$DOCKERFILE_PATH" \
-    "$(dirname "$0")"; then
+    "$BUILD_CONTEXT"; then
     echo ""
     echo -e "${GREEN}Build successful!${NC}"
     echo "========================================"

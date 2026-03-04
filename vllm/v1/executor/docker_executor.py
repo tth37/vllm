@@ -11,13 +11,12 @@ import base64
 import os
 import pickle
 import subprocess
-import sys
 import threading
 import time
 import weakref
 from collections import deque
 from concurrent.futures import Future
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Sequence
 
 import vllm.envs as envs
@@ -26,12 +25,8 @@ from vllm.distributed.device_communicators.shm_broadcast import Handle, MessageQ
 from vllm.logger import init_logger
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.executor.abstract import Executor, FailureCallback
-from vllm.v1.outputs import ModelRunnerOutput
 
 logger = init_logger(__name__)
-
-# Set to True to use subprocess instead of Docker for faster debugging
-_USE_SUBPROCESS = os.environ.get("VLLM_DOCKER_EXECUTOR_USE_SUBPROCESS", "0") == "1"
 
 
 @dataclass
@@ -41,7 +36,6 @@ class DockerWorkerHandle:
     rank: int
     worker_response_mq: MessageQueue | None
     death_monitor_thread: threading.Thread | None = None
-    process: subprocess.Popen | None = None  # For subprocess mode
 
 
 class DockerDistributedExecutor(Executor):
@@ -51,8 +45,8 @@ class DockerDistributedExecutor(Executor):
     a separate process. Uses network-based communication for both
     control plane (ZMQ) and data plane (NCCL).
 
-    In Docker mode, uses a shared volume for handle exchange.
-    In subprocess mode (VLLM_DOCKER_EXECUTOR_USE_SUBPROCESS=1), uses /tmp files.
+    Uses a shared volume for handle exchange between the executor (host)
+    and worker containers.
     """
 
     supports_pp: bool = True
@@ -126,7 +120,7 @@ class DockerDistributedExecutor(Executor):
             for rank in range(self.world_size):
                 local_rank = rank % self.parallel_config.local_world_size
                 is_driver_worker = self._is_driver_worker(rank)
-                handle = self._start_worker(
+                handle = self._start_worker_container(
                     rank=rank,
                     local_rank=local_rank,
                     scheduler_output_handle=scheduler_output_handle,
@@ -145,7 +139,7 @@ class DockerDistributedExecutor(Executor):
                 if handle.worker_response_mq is not None
             ]
 
-            # TODO: We intentionally do NOT call wait_until_ready() on response_mqs.
+            # Note: We intentionally do NOT call wait_until_ready() on response_mqs.
             # This would create a circular wait with the worker:
             # - Reader (executor) waits for writer's READY signal
             # - Writer (worker) waits for reader subscription
@@ -154,11 +148,6 @@ class DockerDistributedExecutor(Executor):
             # Instead, we trust that the connection is established when we
             # receive the handle file from the worker. Synchronization happens
             # naturally when we try to dequeue responses.
-            #
-            # For the real Docker backend, implement proper handshake:
-            # 1. Worker creates response MQ and exports handle
-            # 2. Executor connects and sends confirmation to worker
-            # 3. Both proceed knowing connection is established
             logger.info(f"Collected {len(self.response_mqs)} response MQs (sync deferred)")
 
             self.futures_queue = deque[tuple[Future, Any]]()
@@ -184,184 +173,6 @@ class DockerDistributedExecutor(Executor):
             self.world_size
             - self.parallel_config.tensor_parallel_size
             * self.parallel_config.prefill_context_parallel_size
-        )
-
-    def _get_worker_response_handle(self, rank: int) -> Handle:
-        """Create a handle for worker response MQ."""
-        # Workers will create their own response MQ and we need to connect to it
-        port = get_open_port()
-        return Handle(
-            local_reader_ranks=[],
-            buffer_handle=None,
-            local_subscribe_addr=None,
-            remote_subscribe_addr=f"tcp://{self.host_ip}:{port}",
-            remote_addr_ipv6=False,
-        )
-
-    def _start_worker(
-        self,
-        rank: int,
-        local_rank: int,
-        scheduler_output_handle: Handle,
-        is_driver_worker: bool,
-    ) -> DockerWorkerHandle:
-        """Start a worker - either in Docker container or subprocess for debugging."""
-        if _USE_SUBPROCESS:
-            return self._start_worker_subprocess(
-                rank, local_rank, scheduler_output_handle, is_driver_worker
-            )
-        else:
-            return self._start_worker_container(
-                rank, local_rank, scheduler_output_handle, is_driver_worker
-            )
-
-    def _start_worker_subprocess(
-        self,
-        rank: int,
-        local_rank: int,
-        scheduler_output_handle: Handle,
-        is_driver_worker: bool,
-    ) -> DockerWorkerHandle:
-        """Start a worker in a subprocess for faster debugging (no Docker rebuild needed)."""
-        import json
-
-        worker_name = f"vllm-worker-{rank}"
-
-        # Serialize handle for passing to worker
-        handle_bytes = pickle.dumps(scheduler_output_handle)
-        handle_b64 = base64.b64encode(handle_bytes).decode('utf-8')
-
-        # Serialize vllm_config for passing to worker
-        config_dict = self._serialize_vllm_config()
-        config_b64 = base64.b64encode(json.dumps(config_dict).encode()).decode('utf-8')
-
-        # Prepare environment for subprocess
-        env = os.environ.copy()
-        env["VLLM_WORKER_RANK"] = str(rank)
-        env["VLLM_WORKER_LOCAL_RANK"] = str(local_rank)
-        env["VLLM_WORLD_SIZE"] = str(self.world_size)
-        env["VLLM_SCHEDULER_HANDLE"] = handle_b64
-        env["VLLM_MASTER_ADDR"] = self.host_ip
-        env["VLLM_DISTRIBUTED_INIT_METHOD"] = self.distributed_init_method
-        env["VLLM_CONFIG"] = config_b64
-        env["VLLM_IS_DRIVER_WORKER"] = str(is_driver_worker).lower()
-        env["NCCL_SOCKET_IFNAME"] = "eth0"
-        env["NCCL_DEBUG"] = "WARN"
-        env["PYTHONUNBUFFERED"] = "1"
-        env["CUDA_VISIBLE_DEVICES"] = str(local_rank)  # Restrict GPU access
-
-        # Add vllm-source to PYTHONPATH and set shared volume for handle exchange
-        vllm_source_path = "/home/thd/repositories/vllm-dev/vllm-source"
-        if "PYTHONPATH" in env:
-            env["PYTHONPATH"] = f"{vllm_source_path}:{env['PYTHONPATH']}"
-        else:
-            env["PYTHONPATH"] = vllm_source_path
-        env["VLLM_DOCKER_SHARED_VOLUME"] = self._DOCKER_SHARED_VOLUME
-
-        logger.info(f"Starting worker {rank} in subprocess (debug mode) '{worker_name}'")
-
-        # Start worker as subprocess - use module execution
-        cmd = [
-            sys.executable, "-m", "vllm.v1.executor.docker_worker_entrypoint"
-        ]
-
-        logger.debug(f"Subprocess command: {' '.join(cmd)}")
-        logger.debug(f"Subprocess env: CUDA_VISIBLE_DEVICES={local_rank}, "
-                    f"VLLM_WORKER_RANK={rank}, VLLM_WORLD_SIZE={self.world_size}")
-
-        # Redirect stdout/stderr to files to avoid pipe buffer deadlock
-        log_dir = f"{self._DOCKER_SHARED_VOLUME}/logs"
-        os.makedirs(log_dir, exist_ok=True)
-        stdout_file = open(f"{log_dir}/worker_{rank}_stdout.log", "w")
-        stderr_file = open(f"{log_dir}/worker_{rank}_stderr.log", "w")
-
-        # Start subprocess with file redirection
-        process = subprocess.Popen(
-            cmd,
-            env=env,
-            stdout=stdout_file,
-            stderr=stderr_file,
-        )
-
-        logger.info(f"Worker {rank} subprocess started: PID {process.pid}")
-
-        # Wait a moment and check if process is still running
-        time.sleep(2)
-
-        if process.poll() is not None:
-            # Process exited immediately - capture output from files
-            stdout_file.close()
-            stderr_file.close()
-            with open(f"{self._DOCKER_SHARED_VOLUME}/logs/worker_{rank}_stdout.log", "r") as f:
-                stdout = f.read()
-            with open(f"{self._DOCKER_SHARED_VOLUME}/logs/worker_{rank}_stderr.log", "r") as f:
-                stderr = f.read()
-            raise RuntimeError(
-                f"Worker {rank} subprocess (PID: {process.pid}) "
-                f"exited immediately with code: {process.returncode}.\n"
-                f"STDOUT:\n{stdout[-2000:]}\n"
-                f"STDERR:\n{stderr[-2000:]}"
-            )
-
-        logger.info(f"Worker {rank} subprocess confirmed running (PID: {process.pid})")
-
-        # Wait for worker to export its response handle
-        # The worker writes the handle to a file after initialization
-        handle_file = f"{self._DOCKER_SHARED_VOLUME}/worker_response_handle_{rank}.txt"
-        response_handle_b64 = None
-        logger.info(f"Waiting for worker {rank} to export handle to {handle_file}...")
-        for i in range(120):  # Wait up to 120 seconds (model loading can take time)
-            if os.path.exists(handle_file):
-                with open(handle_file, 'r') as f:
-                    response_handle_b64 = f.read().strip()
-                logger.info(f"Got handle file after {i+1} seconds")
-                break
-            if i % 10 == 0:
-                logger.debug(f"Still waiting for handle file... ({i}s elapsed)")
-            time.sleep(1)
-
-        if response_handle_b64 is None:
-            # Worker didn't write handle file - check if process died
-            if process.poll() is not None:
-                stdout_file.close()
-                stderr_file.close()
-                log_base = f"{self._DOCKER_SHARED_VOLUME}/logs"
-                with open(f"{log_base}/worker_{rank}_stdout.log", "r") as f:
-                    stdout = f.read()
-                with open(f"{log_base}/worker_{rank}_stderr.log", "r") as f:
-                    stderr = f.read()
-                raise RuntimeError(
-                    f"Worker {rank} subprocess exited before exporting handle.\n"
-                    f"Exit code: {process.returncode}\n"
-                    f"STDOUT:\n{stdout[-2000:]}\n"
-                    f"STDERR:\n{stderr[-2000:]}"
-                )
-            raise RuntimeError(
-                f"Timeout waiting for worker {rank} to export response handle to {handle_file}.\n"
-                f"Check worker logs at {self._DOCKER_SHARED_VOLUME}/logs/ for details."
-            )
-
-        # Close log files - they're now owned by the subprocess
-        stdout_file.close()
-        stderr_file.close()
-
-        # Deserialize the handle
-        response_handle_bytes = base64.b64decode(response_handle_b64)
-        response_handle = pickle.loads(response_handle_bytes)
-        logger.info(f"Got response handle from worker {rank}: {response_handle.remote_subscribe_addr}")
-
-        # Create a connection to the worker's response MQ
-        # The worker creates the MQ with n_reader=1 (expecting the executor to read)
-        # We connect as rank 0 (the reader) since we dequeue responses
-        logger.info(f"Connecting to worker {rank} response MQ as reader...")
-        response_mq = MessageQueue.create_from_handle(response_handle, 0)
-        logger.info(f"Connected to worker {rank} response MQ")
-
-        return DockerWorkerHandle(
-            container_name=worker_name,
-            rank=rank,
-            worker_response_mq=response_mq,
-            process=process,
         )
 
     def _start_worker_container(
@@ -659,51 +470,35 @@ class DockerDistributedExecutor(Executor):
         )
 
     def start_worker_monitor(self) -> None:
-        """Start a thread to monitor worker container/process health."""
+        """Start a thread to monitor worker container health."""
         containers = self.container_handles
         self_ref = weakref.ref(self)
 
         def monitor_workers():
-            """Monitor worker health (Docker or subprocess)."""
+            """Monitor worker container health."""
             while True:
                 _self = self_ref()
                 if not _self or getattr(_self, "shutting_down", False):
                     return
 
                 for handle in containers:
-                    if _USE_SUBPROCESS and handle.process is not None:
-                        # Check subprocess health
-                        if handle.process.poll() is not None:
-                            logger.error(
-                                f"Worker subprocess {handle.container_name} "
-                                f"(PID: {handle.process.pid}) has exited unexpectedly "
-                                f"with code {handle.process.returncode}"
-                            )
-                            _self.is_failed = True
-                            _self.shutdown()
-                            callback = _self.failure_callback
-                            if callback is not None:
-                                _self.failure_callback = None
-                                callback()
-                            return
-                    else:
-                        # Check Docker container health
-                        result = subprocess.run(
-                            ["docker", "inspect", "-f", "{{.State.Status}}", handle.container_name],
-                            capture_output=True,
-                            text=True,
+                    # Check Docker container health
+                    result = subprocess.run(
+                        ["docker", "inspect", "-f", "{{.State.Status}}", handle.container_name],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode != 0 or result.stdout.strip() not in ("running", "restarting"):
+                        logger.error(
+                            f"Worker container {handle.container_name} has stopped unexpectedly"
                         )
-                        if result.returncode != 0 or result.stdout.strip() not in ("running", "restarting"):
-                            logger.error(
-                                f"Worker container {handle.container_name} has stopped unexpectedly"
-                            )
-                            _self.is_failed = True
-                            _self.shutdown()
-                            callback = _self.failure_callback
-                            if callback is not None:
-                                _self.failure_callback = None
-                                callback()
-                            return
+                        _self.is_failed = True
+                        _self.shutdown()
+                        callback = _self.failure_callback
+                        if callback is not None:
+                            _self.failure_callback = None
+                            callback()
+                        return
 
                 time.sleep(1)  # Check every second
 
@@ -719,59 +514,39 @@ class DockerDistributedExecutor(Executor):
             self.failure_callback = callback
 
     def check_health(self) -> None:
-        """Check if all workers are running (containers or subprocesses)."""
+        """Check if all worker containers are running."""
         for handle in self.container_handles:
-            if _USE_SUBPROCESS and handle.process is not None:
-                # Check subprocess health
-                if handle.process.poll() is not None:
-                    raise RuntimeError(
-                        f"Worker subprocess {handle.container_name} (PID: {handle.process.pid}) "
-                        f"has exited with code {handle.process.returncode}"
-                    )
-            else:
-                # Check Docker container health
-                result = subprocess.run(
-                    ["docker", "inspect", "-f", "{{.State.Status}}", handle.container_name],
-                    capture_output=True,
-                    text=True,
+            result = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Status}}", handle.container_name],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"Cannot check health of container {handle.container_name}: {result.stderr}"
                 )
-                if result.returncode != 0:
-                    raise RuntimeError(
-                        f"Cannot check health of container {handle.container_name}: {result.stderr}"
-                    )
-                if result.stdout.strip() != "running":
-                    raise RuntimeError(
-                        f"Worker container {handle.container_name} is not running: {result.stdout.strip()}"
-                    )
+            if result.stdout.strip() != "running":
+                raise RuntimeError(
+                    f"Worker container {handle.container_name} is not running: {result.stdout.strip()}"
+                )
 
         # Also run health check on workers via RPC
         self.collective_rpc("check_health", timeout=10)
 
     def shutdown(self) -> None:
-        """Stop all worker containers/processes."""
+        """Stop all worker containers."""
         if getattr(self, "shutting_down", False):
             return
         self.shutting_down = True
         self.shutdown_event.set()
 
-        # Stop all workers (containers or subprocesses)
+        # Stop all worker containers
         for handle in self.container_handles:
-            if _USE_SUBPROCESS and handle.process is not None:
-                logger.info(f"Stopping worker subprocess {handle.container_name} (PID: {handle.process.pid})")
-                # Try graceful shutdown first
-                handle.process.terminate()
-                try:
-                    handle.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"Worker {handle.container_name} did not terminate gracefully, killing...")
-                    handle.process.kill()
-                    handle.process.wait()
-            else:
-                logger.info(f"Stopping worker container {handle.container_name}")
-                subprocess.run(
-                    ["docker", "stop", "-t", "30", handle.container_name],
-                    capture_output=True,
-                )
+            logger.info(f"Stopping worker container {handle.container_name}")
+            subprocess.run(
+                ["docker", "stop", "-t", "30", handle.container_name],
+                capture_output=True,
+            )
 
         # Clean up
         self.rpc_broadcast_mq = None
