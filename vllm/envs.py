@@ -79,6 +79,7 @@ if TYPE_CHECKING:
     VLLM_USE_PRECOMPILED: bool = False
     VLLM_SKIP_PRECOMPILED_VERSION_SUFFIX: bool = False
     VLLM_DOCKER_BUILD_CONTEXT: bool = False
+    VLLM_DOCKER_IMAGE: str = ""
     VLLM_KEEP_ALIVE_ON_ENGINE_DEATH: bool = False
     CMAKE_BUILD_TYPE: Literal["Debug", "Release", "RelWithDebInfo"] | None = None
     VERBOSE: bool = False
@@ -507,6 +508,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     .strip()
     .lower()
     in ("1", "true"),
+    # Docker image to use for DockerDistributedExecutor.
+    # If not set, defaults to vllm/vllm-docker-executor:latest
+    "VLLM_DOCKER_IMAGE": lambda: os.environ.get("VLLM_DOCKER_IMAGE", ""),
     # CMake build type
     # If not set, defaults to "Debug" or "RelWithDebInfo"
     # Available options: "Debug", "Release", "RelWithDebInfo"

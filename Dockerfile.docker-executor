@@ -1,0 +1,64 @@
+# Dockerfile for vLLM DockerDistributedExecutor
+# Builds from local vLLM source code using the official recommended uv-based installation.
+#
+# Usage:
+#   docker build -t vllm-docker-executor -f Dockerfile.docker-executor .
+#
+# This Dockerfile uses the official vLLM recommended installation method:
+#   uv venv --python 3.12 --seed --managed-python
+#   uv pip install --editable .
+
+FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_HOME=/usr/local/cuda
+
+# Install system dependencies including curl for uv installation
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv (the fast Python package manager)
+# Following the official uv installation guide: https://docs.astral.sh/uv/getting-started/installation/
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Add uv to PATH
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Copy vLLM source code
+COPY . /vllm
+WORKDIR /vllm
+
+# Create Python virtual environment using uv (official recommended way)
+# Using --seed to ensure pip is available and --managed-python for isolation
+RUN uv venv --python 3.12 --seed --managed-python
+
+# Activate the virtual environment and install vLLM from source
+# Using --editable for development mode (changes to source are reflected immediately)
+# Using --torch-backend=auto to automatically select appropriate PyTorch CUDA version
+ENV VLLM_PRECOMPILED_WHEEL_COMMIT=ec13e549d3e1de13d05af759cc8bef3f7cf5e318
+ENV VLLM_USE_PRECOMPILED=1
+RUN . .venv/bin/activate && \
+    uv pip install --editable . --torch-backend=auto --index=https://pypi.tuna.tsinghua.edu.cn/simple/
+
+# Verify installation
+RUN . .venv/bin/activate && \
+    python -c "import vllm; print(f'vLLM version: {vllm.__version__}')" && \
+    python -c "from vllm.v1.executor.docker_worker_entrypoint import main; print('Docker worker entrypoint OK')" && \
+    python -c "from vllm.v1.executor.docker_executor import DockerDistributedExecutor; print('Docker executor OK')"
+
+# Set the virtual environment Python as default
+ENV PATH="/vllm/.venv/bin:${PATH}"
+ENV VIRTUAL_ENV="/vllm/.venv"
+
+# Labels
+LABEL maintainer="vLLM Docker Executor"
+LABEL description="vLLM with DockerDistributedExecutor support (uv-based build from source)"
+
+# Default command for worker containers
+CMD ["python", "-m", "vllm.v1.executor.docker_worker_entrypoint"]

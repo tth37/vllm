@@ -72,6 +72,10 @@ class Executor(ABC):
             # TODO: make v1 scheduling deterministic
             # to support external launcher
             executor_class = ExecutorWithExternalLauncher
+        elif distributed_executor_backend == "docker":
+            from vllm.v1.executor.docker_executor import DockerDistributedExecutor
+
+            executor_class = DockerDistributedExecutor
         elif isinstance(distributed_executor_backend, str):
             executor_class = resolve_obj_by_qualname(distributed_executor_backend)
             if not issubclass(executor_class, Executor):

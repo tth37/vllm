@@ -377,6 +377,14 @@ class MessageQueue:
             socket_addr = handle.local_subscribe_addr
             logger.debug("Connecting to %s", socket_addr)
             self.local_socket.connect(socket_addr)
+            # TODO: This is a workaround for ZMQ subscription propagation race.
+            # ZMQ SUB socket subscription messages are asynchronous and there's
+            # no way to know when they've reached the XPUB writer. The writer's
+            # wait_until_ready() needs to see the subscription before it can
+            # send the READY signal. A proper fix would require an explicit
+            # handshake protocol or using ZMQ's subscription forwarding feature.
+            # See: https://github.com/zeromq/libzmq/issues/2267
+            time.sleep(0.1)
 
             self.remote_socket = None
 
@@ -399,6 +407,9 @@ class MessageQueue:
             socket_addr = handle.remote_subscribe_addr
             logger.debug("Connecting to %s", socket_addr)
             self.remote_socket.connect(socket_addr)
+            # Give ZMQ time for subscription to propagate to the writer's XPUB socket
+            # This is necessary because ZMQ subscription messages are asynchronous
+            time.sleep(0.1)
 
         return self
 
