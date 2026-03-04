@@ -309,11 +309,15 @@ class DockerDistributedExecutor(Executor):
         # The worker writes the handle to a file after initialization
         handle_file = f"{self._DOCKER_SHARED_VOLUME}/worker_response_handle_{rank}.txt"
         response_handle_b64 = None
-        for _ in range(60):  # Wait up to 60 seconds
+        logger.info(f"Waiting for worker {rank} to export handle to {handle_file}...")
+        for i in range(120):  # Wait up to 120 seconds (model loading can take time)
             if os.path.exists(handle_file):
                 with open(handle_file, 'r') as f:
                     response_handle_b64 = f.read().strip()
+                logger.info(f"Got handle file after {i+1} seconds")
                 break
+            if i % 10 == 0:
+                logger.debug(f"Still waiting for handle file... ({i}s elapsed)")
             time.sleep(1)
 
         if response_handle_b64 is None:
@@ -333,7 +337,8 @@ class DockerDistributedExecutor(Executor):
                     f"STDERR:\n{stderr[-2000:]}"
                 )
             raise RuntimeError(
-                f"Timeout waiting for worker {rank} to export response handle"
+                f"Timeout waiting for worker {rank} to export response handle to {handle_file}.\n"
+                f"Check worker logs at {self._DOCKER_SHARED_VOLUME}/logs/ for details."
             )
 
         # Close log files - they're now owned by the subprocess
@@ -474,11 +479,15 @@ class DockerDistributedExecutor(Executor):
         # Wait for worker to export its response handle via shared volume
         handle_file = f"{shared_volume}/worker_response_handle_{rank}.txt"
         response_handle_b64 = None
-        for _ in range(60):  # Wait up to 60 seconds
+        logger.info(f"Waiting for worker {rank} to export handle to {handle_file}...")
+        for i in range(120):  # Wait up to 120 seconds (model loading can take time)
             if os.path.exists(handle_file):
                 with open(handle_file, 'r') as f:
                     response_handle_b64 = f.read().strip()
+                logger.info(f"Got handle file after {i+1} seconds")
                 break
+            if i % 10 == 0:
+                logger.debug(f"Still waiting for handle file... ({i}s elapsed)")
             time.sleep(1)
 
         if response_handle_b64 is None:
@@ -489,7 +498,7 @@ class DockerDistributedExecutor(Executor):
             )
             container_status = check_result.stdout.strip() if check_result.returncode == 0 else "unknown"
             raise RuntimeError(
-                f"Timeout waiting for worker {rank} to export response handle.\n"
+                f"Timeout waiting for worker {rank} to export response handle to {handle_file}.\n"
                 f"Container status: {container_status}\n"
                 f"Check 'docker logs {container_name}' for details."
             )
