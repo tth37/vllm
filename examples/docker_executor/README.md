@@ -129,6 +129,81 @@ llm = LLM(
 outputs = llm.generate(["Hello, world!"])
 ```
 
+## Benchmarking with vLLM Serve
+
+You can benchmark the Docker executor using `vllm serve` with the OpenAI-compatible API.
+
+### 1. Start vLLM Serve
+
+```bash
+vllm serve facebook/opt-125m \
+    --tensor-parallel-size 2 \
+    --distributed-executor-backend docker \
+    --port 8000
+```
+
+### 2. Run the Benchmark
+
+```bash
+# Basic benchmark (50 requests, 5 concurrent)
+python examples/docker_executor/benchmark_serve.py
+
+# Custom benchmark
+python examples/docker_executor/benchmark_serve.py \
+    --url http://localhost:8000/v1/completions \
+    --model facebook/opt-125m \
+    --num-requests 100 \
+    --concurrency 10 \
+    --max-tokens 128 \
+    --prompt-len 50
+```
+
+### Benchmark Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--url` | `http://localhost:8000/v1/completions` | API endpoint URL |
+| `--model` | `facebook/opt-125m` | Model name |
+| `--num-requests` | 50 | Total requests to send |
+| `--concurrency` | 5 | Concurrent clients |
+| `--max-tokens` | 100 | Output tokens per request |
+| `--prompt-len` | 50 | Input tokens per request |
+| `--temperature` | 0.0 | Sampling temperature |
+
+### Prerequisites
+
+Install `aiohttp` for the benchmark:
+```bash
+pip install aiohttp
+```
+
+### Example Output
+
+```
+======================================================================
+vLLM OpenAI API Benchmark
+======================================================================
+URL:              http://localhost:8000/v1/completions
+Model:            facebook/opt-125m
+Total requests:   50
+Concurrency:      5
+Max tokens:       100
+Prompt length:    ~50 tokens
+Temperature:      0.0
+======================================================================
+
+Throughput:
+  Requests/sec:       12.34
+  Input tokens/sec:   617.12
+  Output tokens/sec:  987.65
+  Total tokens/sec:   1604.77
+
+Latency (seconds):
+  Mean:               0.405
+  P50:                0.398
+  P90:                0.512
+```
+
 ## Requirements
 
 - Docker installed and running

@@ -10,6 +10,8 @@ the control plane (MessageQueue) and data plane (NCCL).
 import base64
 import os
 import pickle
+import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -62,7 +64,87 @@ class DockerDistributedExecutor(Executor):
         self.is_failed = False
         self.shutdown_event = threading.Event()
         self.failure_callback: FailureCallback | None = None
+
+        # Clean up any stale state from previous runs before initializing
+        self._cleanup_stale_resources()
+
+        # Register signal handlers for graceful shutdown
+        self._register_signal_handlers()
+
         super().__init__(vllm_config)
+
+    def _cleanup_stale_resources(self) -> None:
+        """Clean up stale containers and shared directory from previous runs.
+
+        This is called before initialization to ensure a clean state,
+        especially important when restarting after a crash or unclean shutdown.
+        """
+        logger.info("Cleaning up stale Docker executor resources...")
+
+        # Clean up shared volume directory
+        shared_volume = self._DOCKER_SHARED_VOLUME
+        if os.path.exists(shared_volume):
+            try:
+                shutil.rmtree(shared_volume)
+                logger.info(f"Cleaned up shared volume: {shared_volume}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up shared volume: {e}")
+
+        # Clean up any leftover vllm-worker containers
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "-aq", "--filter", "name=vllm-worker-"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                container_ids = result.stdout.strip().split('\n')
+                for cid in container_ids:
+                    if cid:
+                        # Force remove the container (stop if running, then remove)
+                        rm_result = subprocess.run(
+                            ["docker", "rm", "-f", cid],
+                            capture_output=True, timeout=10
+                        )
+                        if rm_result.returncode == 0:
+                            logger.info(f"Removed stale container: {cid[:12]}")
+                        else:
+                            logger.warning(f"Failed to remove stale container {cid[:12]}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up stale containers: {e}")
+
+        logger.info("Stale resource cleanup complete")
+
+    def _register_signal_handlers(self) -> None:
+        """Register signal handlers for graceful shutdown.
+
+        This ensures containers are properly cleaned up when the process
+        receives SIGTERM (e.g., from systemd, Kubernetes) or SIGINT (Ctrl+C).
+        """
+        # Use a class-level flag to avoid registering multiple times
+        if getattr(DockerDistributedExecutor, '_signal_handlers_registered', False):
+            return
+        DockerDistributedExecutor._signal_handlers_registered = True
+
+        original_sigterm = signal.getsignal(signal.SIGTERM)
+        original_sigint = signal.getsignal(signal.SIGINT)
+
+        def signal_handler(signum, frame):
+            logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+            # The finalizer will call shutdown() which will clean up containers
+            if self._finalizer is not None:
+                self._finalizer()
+            # Call original handler if it wasn't default
+            if signum == signal.SIGTERM and original_sigterm not in (signal.SIG_DFL, signal.SIG_IGN):
+                original_sigterm(signum, frame)
+            elif signum == signal.SIGINT and original_sigint not in (signal.SIG_DFL, signal.SIG_IGN):
+                original_sigint(signum, frame)
+            # Exit cleanly
+            import sys
+            sys.exit(0)
+
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+        logger.debug("Registered signal handlers for graceful shutdown")
 
     def _get_host_ip(self) -> str:
         """Get IP address accessible from Docker containers."""
@@ -231,7 +313,7 @@ class DockerDistributedExecutor(Executor):
         cmd = [
             "docker", "run",
             "-d",  # Detached mode
-            # "--rm",  # REMOVED: Keep containers for debugging failed starts
+            "--rm",  # Auto-remove container when it stops (safeguard)
             "--name", container_name,
             "--gpus", "all",  # All GPUs visible to all containers for NCCL
             "--network", "host",  # Use host network for simplicity
@@ -594,20 +676,83 @@ class DockerDistributedExecutor(Executor):
         self.collective_rpc("check_health", timeout=10)
 
     def shutdown(self) -> None:
-        """Stop all worker containers."""
+        """Stop and remove all worker containers.
+
+        This method is called:
+        1. On normal exit via weakref.finalize
+        2. On signal reception (SIGTERM/SIGINT)
+        3. On initialization failure
+        4. Explicitly by the user
+        """
         if getattr(self, "shutting_down", False):
             return
         self.shutting_down = True
         self.shutdown_event.set()
 
-        # Stop all worker containers
-        for handle in self.container_handles:
-            logger.info(f"Stopping worker container {handle.container_name}")
-            subprocess.run(
-                ["docker", "stop", "-t", "30", handle.container_name],
-                capture_output=True,
-            )
+        logger.info("Shutting down Docker executor...")
 
-        # Clean up
+        # Stop and remove all worker containers
+        for handle in self.container_handles:
+            container_name = handle.container_name
+            logger.info(f"Cleaning up worker container {container_name}")
+
+            # Step 1: Try graceful stop (docker stop sends SIGTERM)
+            try:
+                result = subprocess.run(
+                    ["docker", "stop", "-t", "10", container_name],
+                    capture_output=True, text=True, timeout=15
+                )
+                if result.returncode == 0:
+                    logger.info(f"Stopped container {container_name}")
+                else:
+                    # Container might already be stopped or removed
+                    logger.debug(f"Stop returned {result.returncode} for {container_name}: {result.stderr.strip()}")
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Timeout stopping container {container_name}")
+            except Exception as e:
+                logger.debug(f"Error stopping container {container_name}: {e}")
+
+            # Step 2: Force kill if still running (SIGKILL)
+            try:
+                result = subprocess.run(
+                    ["docker", "kill", container_name],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    logger.info(f"Killed container {container_name}")
+            except Exception:
+                # Ignore errors - container might already be stopped
+                pass
+
+            # Step 3: Remove the container
+            try:
+                result = subprocess.run(
+                    ["docker", "rm", "-f", container_name],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    logger.info(f"Removed container {container_name}")
+                else:
+                    err = result.stderr.strip()
+                    if "No such container" in err or "is not running" in err:
+                        logger.debug(f"Container {container_name} already removed")
+                    else:
+                        logger.warning(f"Failed to remove container {container_name}: {err}")
+            except Exception as e:
+                logger.debug(f"Error removing container {container_name}: {e}")
+
+        # Clean up shared volume
+        shared_volume = self._DOCKER_SHARED_VOLUME
+        if os.path.exists(shared_volume):
+            try:
+                shutil.rmtree(shared_volume)
+                logger.info(f"Cleaned up shared volume: {shared_volume}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up shared volume: {e}")
+
+        # Clean up Python objects
         self.rpc_broadcast_mq = None
         self.response_mqs = []
+        self.container_handles = []
+
+        logger.info("Docker executor shutdown complete")
