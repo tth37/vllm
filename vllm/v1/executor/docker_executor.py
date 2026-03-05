@@ -115,18 +115,34 @@ class DockerDistributedExecutor(Executor):
         scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
 
         # Start worker containers
+        # IMPORTANT: All containers must start simultaneously for NCCL initialization.
+        # NCCL requires all ranks to participate in init_distributed_environment()
+        # at roughly the same time. If we start them sequentially and wait for each
+        # to fully initialize, the first worker will timeout waiting for others.
         success = False
+        temp_handles: list[tuple[int, str]] = []  # (rank, container_name)
         try:
+            # Phase 1: Launch all containers first (don't wait for handles yet)
+            logger.info(f"Launching {self.world_size} worker containers...")
             for rank in range(self.world_size):
                 local_rank = rank % self.parallel_config.local_world_size
                 is_driver_worker = self._is_driver_worker(rank)
-                handle = self._start_worker_container(
+                container_name = self._launch_worker_container(
                     rank=rank,
                     local_rank=local_rank,
                     scheduler_output_handle=scheduler_output_handle,
                     is_driver_worker=is_driver_worker,
                 )
+                temp_handles.append((rank, container_name))
+                logger.info(f"Launched container {container_name} for rank {rank}")
+
+            # Phase 2: Wait for all workers to export their handles
+            # This happens in parallel as all containers are now running NCCL init
+            logger.info("All containers launched. Waiting for workers to export handles...")
+            for rank, container_name in temp_handles:
+                handle = self._wait_for_worker_handle(rank, container_name)
                 self.container_handles.append(handle)
+                logger.info(f"Worker {rank} handle collected")
 
             # Wait for message queues to be ready
             logger.info("Waiting for RPC broadcast MQ to be ready...")
@@ -175,18 +191,18 @@ class DockerDistributedExecutor(Executor):
             * self.parallel_config.prefill_context_parallel_size
         )
 
-    def _start_worker_container(
+    def _launch_worker_container(
         self,
         rank: int,
         local_rank: int,
         scheduler_output_handle: Handle,
         is_driver_worker: bool,
-    ) -> DockerWorkerHandle:
-        """Start a worker in a Docker container.
+    ) -> str:
+        """Launch a Docker container for a worker.
 
-        Uses a shared Docker volume for handle exchange between the executor
-        (host) and worker (container). This allows bidirectional communication
-        without requiring the executor to be in a container.
+        Returns the container name. The container is started but we don't wait
+        for it to fully initialize yet. This allows all containers to start
+        simultaneously for NCCL initialization.
         """
         import json
 
@@ -204,6 +220,11 @@ class DockerDistributedExecutor(Executor):
         shared_volume = self._DOCKER_SHARED_VOLUME
         os.makedirs(shared_volume, exist_ok=True)
 
+        # Get total GPUs needed for CUDA_VISIBLE_DEVICES
+        # All containers see all GPUs, but each worker only uses its assigned GPU
+        total_gpus = self.parallel_config.tensor_parallel_size * self.parallel_config.pipeline_parallel_size
+        all_gpus = ",".join(str(i) for i in range(total_gpus))
+
         # Build docker run command
         # Note: We intentionally don't use --rm so that failed containers can be
         # inspected with 'docker logs' for debugging purposes
@@ -212,8 +233,9 @@ class DockerDistributedExecutor(Executor):
             "-d",  # Detached mode
             # "--rm",  # REMOVED: Keep containers for debugging failed starts
             "--name", container_name,
-            "--gpus", f"device={local_rank}",
+            "--gpus", "all",  # All GPUs visible to all containers for NCCL
             "--network", "host",  # Use host network for simplicity
+            "--shm-size=8g",  # Increase shared memory for NCCL (default 64MB is too small)
             "-v", f"{shared_volume}:{shared_volume}",  # Shared volume for handle exchange
             "-e", f"VLLM_WORKER_RANK={rank}",
             "-e", f"VLLM_WORKER_LOCAL_RANK={local_rank}",
@@ -224,7 +246,11 @@ class DockerDistributedExecutor(Executor):
             "-e", f"VLLM_CONFIG={config_b64}",
             "-e", f"VLLM_IS_DRIVER_WORKER={str(is_driver_worker).lower()}",
             "-e", f"VLLM_DOCKER_SHARED_VOLUME={shared_volume}",
-            "-e", "NCCL_SOCKET_IFNAME=eth0",  # Adjust as needed
+            "-e", f"CUDA_VISIBLE_DEVICES={all_gpus}",  # All GPUs visible for NCCL
+            "-e", f"LOCAL_RANK={local_rank}",  # Each worker uses its assigned GPU
+            # NCCL socket interface: let NCCL auto-detect, or exclude loopback
+            # Using '^lo' tells NCCL to use any interface except loopback
+            "-e", "NCCL_SOCKET_IFNAME=^lo",
             "-e", "NCCL_DEBUG=WARN",
             "-e", "PYTHONUNBUFFERED=1",
         ]
@@ -242,7 +268,7 @@ class DockerDistributedExecutor(Executor):
             "python", "-m", "vllm.v1.executor.docker_worker_entrypoint"
         ])
 
-        logger.info(f"Starting worker {rank} in Docker container '{container_name}'")
+        logger.info(f"Launching worker {rank} container '{container_name}'")
         logger.debug(f"Docker command: {' '.join(cmd)}")
 
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -254,17 +280,16 @@ class DockerDistributedExecutor(Executor):
             )
 
         container_id = result.stdout.strip()
-        logger.info(f"Worker {rank} container started: {container_id[:12]}")
+        logger.info(f"Worker {rank} container launched: {container_id[:12]}")
 
-        # Wait a moment and check if container is still running
-        time.sleep(2)
+        # Quick check that container is still running (but don't wait for full init)
+        time.sleep(1)
         check_result = subprocess.run(
             ['docker', 'inspect', '-f', '{{.State.Status}}', container_name],
             capture_output=True, text=True
         )
 
         if check_result.returncode != 0:
-            # Container doesn't exist or inspect failed
             raise RuntimeError(
                 f"Container {container_name} (ID: {container_id[:12]}) "
                 f"failed immediately after start. "
@@ -273,7 +298,6 @@ class DockerDistributedExecutor(Executor):
 
         container_status = check_result.stdout.strip()
         if container_status != "running":
-            # Container exited immediately - get logs
             logs_result = subprocess.run(
                 ['docker', 'logs', container_name],
                 capture_output=True, text=True
@@ -282,23 +306,54 @@ class DockerDistributedExecutor(Executor):
             raise RuntimeError(
                 f"Container {container_name} (ID: {container_id[:12]}) "
                 f"exited immediately with status: {container_status}.\n"
-                f"Container logs:\n{logs[-2000:]}"  # Last 2000 chars
+                f"Container logs:\n{logs[-2000:]}"
             )
 
-        logger.info(f"Worker {rank} container confirmed running")
+        return container_name
 
-        # Wait for worker to export its response handle via shared volume
+    def _wait_for_worker_handle(
+        self,
+        rank: int,
+        container_name: str,
+    ) -> DockerWorkerHandle:
+        """Wait for a worker to export its response handle.
+
+        This is called after all containers have been launched, allowing
+        NCCL initialization to happen in parallel across all workers.
+        """
+        shared_volume = self._DOCKER_SHARED_VOLUME
         handle_file = f"{shared_volume}/worker_response_handle_{rank}.txt"
-        response_handle_b64 = None
+
         logger.info(f"Waiting for worker {rank} to export handle to {handle_file}...")
-        for i in range(120):  # Wait up to 120 seconds (model loading can take time)
+
+        response_handle_b64 = None
+        for i in range(180):  # Wait up to 180 seconds (model loading + NCCL init can take time)
             if os.path.exists(handle_file):
                 with open(handle_file, 'r') as f:
                     response_handle_b64 = f.read().strip()
-                logger.info(f"Got handle file after {i+1} seconds")
+                logger.info(f"Got handle file for worker {rank} after {i+1} seconds")
                 break
+
+            # Check if container is still running
+            if i % 5 == 0:
+                check_result = subprocess.run(
+                    ['docker', 'inspect', '-f', '{{.State.Status}}', container_name],
+                    capture_output=True, text=True
+                )
+                if check_result.returncode != 0 or check_result.stdout.strip() != "running":
+                    logs_result = subprocess.run(
+                        ['docker', 'logs', container_name],
+                        capture_output=True, text=True
+                    )
+                    logs = logs_result.stdout if logs_result.returncode == 0 else "No logs available"
+                    raise RuntimeError(
+                        f"Container {container_name} stopped while waiting for handle.\n"
+                        f"Container status: {check_result.stdout.strip() if check_result.returncode == 0 else 'unknown'}\n"
+                        f"Container logs:\n{logs[-3000:]}"
+                    )
+
             if i % 10 == 0:
-                logger.debug(f"Still waiting for handle file... ({i}s elapsed)")
+                logger.debug(f"Still waiting for handle file for worker {rank}... ({i}s elapsed)")
             time.sleep(1)
 
         if response_handle_b64 is None:
@@ -308,10 +363,15 @@ class DockerDistributedExecutor(Executor):
                 capture_output=True, text=True
             )
             container_status = check_result.stdout.strip() if check_result.returncode == 0 else "unknown"
+            logs_result = subprocess.run(
+                ['docker', 'logs', container_name],
+                capture_output=True, text=True
+            )
+            logs = logs_result.stdout if logs_result.returncode == 0 else "No logs available"
             raise RuntimeError(
                 f"Timeout waiting for worker {rank} to export response handle to {handle_file}.\n"
                 f"Container status: {container_status}\n"
-                f"Check 'docker logs {container_name}' for details."
+                f"Container logs:\n{logs[-3000:]}"
             )
 
         # Deserialize the handle

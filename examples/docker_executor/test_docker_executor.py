@@ -11,11 +11,17 @@ Requirements:
 - vllm/vllm-docker-executor:latest image built
 
 Usage:
-    python examples/docker_executor/test_docker_executor.py
+    python examples/docker_executor/test_docker_executor.py [--tp TP] [--pp PP]
+
+Options:
+    --tp, --tensor-parallel-size    Tensor parallel size (default: 1)
+    --pp, --pipeline-parallel-size  Pipeline parallel size (default: 1)
+    --model                         Model name to use (default: facebook/opt-125m)
 
 Or from the repo root:
-    python -m examples.docker_executor.test_docker_executor
+    python -m examples.docker_executor.test_docker_executor --tp 2 --pp 1
 """
+import argparse
 import os
 import sys
 import time
@@ -95,8 +101,16 @@ def check_docker():
         return False
 
 
-def test_basic_inference():
-    """Test basic inference with docker executor using real containers."""
+def test_basic_inference(tensor_parallel_size: int = 1,
+                         pipeline_parallel_size: int = 1,
+                         model: str = "facebook/opt-125m"):
+    """Test basic inference with docker executor using real containers.
+
+    Args:
+        tensor_parallel_size: Number of GPUs for tensor parallelism
+        pipeline_parallel_size: Number of stages for pipeline parallelism
+        model: Model name to use for testing
+    """
     # Clean up any stale state first
     cleanup()
 
@@ -123,8 +137,16 @@ def test_basic_inference():
         print(f"  - GPU {i}: {torch.cuda.get_device_name(i)}")
     print()
 
+    # Calculate required GPUs
+    total_gpus_needed = tensor_parallel_size * pipeline_parallel_size
+    if gpu_count < total_gpus_needed:
+        print(
+            f"ERROR: Not enough GPUs. Need {total_gpus_needed} (TP={tensor_parallel_size} x PP={pipeline_parallel_size}), have {gpu_count}"
+        )
+        cleanup()
+        return False
+
     # Test configuration
-    model = "facebook/opt-125m"
     prompts = [
         "Hello, my name is",
         "The capital of France is",
@@ -135,7 +157,8 @@ def test_basic_inference():
     )
 
     print(f"Model: {model}")
-    print(f"Tensor parallel size: 1")
+    print(f"Tensor parallel size: {tensor_parallel_size}")
+    print(f"Pipeline parallel size: {pipeline_parallel_size}")
     print(f"Prompts: {prompts}")
     print()
 
@@ -148,8 +171,8 @@ def test_basic_inference():
 
         llm = LLM(
             model=model,
-            tensor_parallel_size=1,
-            pipeline_parallel_size=1,
+            tensor_parallel_size=tensor_parallel_size,
+            pipeline_parallel_size=pipeline_parallel_size,
             distributed_executor_backend="docker",
             gpu_memory_utilization=0.5,
             max_model_len=512,
@@ -201,9 +224,49 @@ def test_basic_inference():
     return success
 
 
-if __name__ == "__main__":
+def main():
+    """Parse arguments and run the test."""
+    parser = argparse.ArgumentParser(
+        description="Test DockerDistributedExecutor for vLLM")
+    parser.add_argument(
+        "--tp",
+        "--tensor-parallel-size",
+        type=int,
+        default=1,
+        dest="tensor_parallel_size",
+        help="Tensor parallel size (number of GPUs per pipeline stage) (default: 1)",
+    )
+    parser.add_argument(
+        "--pp",
+        "--pipeline-parallel-size",
+        type=int,
+        default=1,
+        dest="pipeline_parallel_size",
+        help="Pipeline parallel size (number of pipeline stages) (default: 1)",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="facebook/opt-125m",
+        help="Model name to use for testing (default: facebook/opt-125m)",
+    )
+
+    args = parser.parse_args()
+
+    # Validate arguments
+    if args.tensor_parallel_size < 1:
+        print("ERROR: Tensor parallel size must be >= 1")
+        sys.exit(1)
+    if args.pipeline_parallel_size < 1:
+        print("ERROR: Pipeline parallel size must be >= 1")
+        sys.exit(1)
+
     try:
-        success = test_basic_inference()
+        success = test_basic_inference(
+            tensor_parallel_size=args.tensor_parallel_size,
+            pipeline_parallel_size=args.pipeline_parallel_size,
+            model=args.model,
+        )
         sys.exit(0 if success else 1)
     except KeyboardInterrupt:
         print("\nInterrupted by user")
@@ -213,3 +276,7 @@ if __name__ == "__main__":
         print(f"\nUnexpected error: {e}")
         cleanup()
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
