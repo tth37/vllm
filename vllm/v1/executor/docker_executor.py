@@ -8,18 +8,24 @@ the control plane (MessageQueue) and data plane (NCCL).
 """
 
 import base64
+import json
 import os
 import pickle
 import shutil
 import signal
+import socket
 import subprocess
+import sys
 import threading
 import time
 import weakref
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, Sequence
+
+import cloudpickle
 
 import vllm.envs as envs
 from vllm.config import VllmConfig
@@ -27,6 +33,7 @@ from vllm.distributed.device_communicators.shm_broadcast import Handle, MessageQ
 from vllm.logger import init_logger
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.executor.abstract import Executor, FailureCallback
+from vllm.v1.executor.multiproc_executor import FutureWrapper
 
 logger = init_logger(__name__)
 
@@ -37,7 +44,6 @@ class DockerWorkerHandle:
     container_name: str
     rank: int
     worker_response_mq: MessageQueue | None
-    death_monitor_thread: threading.Thread | None = None
 
 
 class DockerDistributedExecutor(Executor):
@@ -74,97 +80,79 @@ class DockerDistributedExecutor(Executor):
         super().__init__(vllm_config)
 
     def _cleanup_stale_resources(self) -> None:
-        """Clean up stale containers and shared directory from previous runs.
-
-        This is called before initialization to ensure a clean state,
-        especially important when restarting after a crash or unclean shutdown.
-        """
-        logger.info("Cleaning up stale Docker executor resources...")
-
-        # Clean up shared volume directory
+        """Clean up stale containers and shared directory from previous runs."""
         shared_volume = self._DOCKER_SHARED_VOLUME
         if os.path.exists(shared_volume):
             try:
                 shutil.rmtree(shared_volume)
-                logger.info(f"Cleaned up shared volume: {shared_volume}")
+                logger.info("Cleaned up shared volume: %s", shared_volume)
             except Exception as e:
-                logger.warning(f"Failed to clean up shared volume: {e}")
+                logger.warning("Failed to clean up shared volume: %s", e)
 
-        # Clean up any leftover vllm-worker containers
         try:
             result = subprocess.run(
                 ["docker", "ps", "-aq", "--filter", "name=vllm-worker-"],
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0 and result.stdout.strip():
-                container_ids = result.stdout.strip().split('\n')
-                for cid in container_ids:
-                    if cid:
-                        # Force remove the container (stop if running, then remove)
-                        rm_result = subprocess.run(
-                            ["docker", "rm", "-f", cid],
-                            capture_output=True, timeout=10
-                        )
-                        if rm_result.returncode == 0:
-                            logger.info(f"Removed stale container: {cid[:12]}")
-                        else:
-                            logger.warning(f"Failed to remove stale container {cid[:12]}")
+                container_ids = [c for c in result.stdout.strip().split("\n") if c]
+                if container_ids:
+                    subprocess.run(
+                        ["docker", "rm", "-f", *container_ids],
+                        capture_output=True, timeout=15,
+                    )
+                    logger.info("Removed %d stale container(s)", len(container_ids))
         except Exception as e:
-            logger.warning(f"Failed to clean up stale containers: {e}")
-
-        logger.info("Stale resource cleanup complete")
+            logger.warning("Failed to clean up stale containers: %s", e)
 
     def _register_signal_handlers(self) -> None:
         """Register signal handlers for graceful shutdown.
 
-        This ensures containers are properly cleaned up when the process
-        receives SIGTERM (e.g., from systemd, Kubernetes) or SIGINT (Ctrl+C).
+        Ensures containers are cleaned up on SIGTERM (systemd, K8s) or
+        SIGINT (Ctrl+C). Uses a weakref to avoid preventing GC of the
+        executor instance.
         """
-        # Use a class-level flag to avoid registering multiple times
-        if getattr(DockerDistributedExecutor, '_signal_handlers_registered', False):
+        if getattr(DockerDistributedExecutor, "_signal_handlers_registered", False):
             return
         DockerDistributedExecutor._signal_handlers_registered = True
 
         original_sigterm = signal.getsignal(signal.SIGTERM)
         original_sigint = signal.getsignal(signal.SIGINT)
+        self_ref = weakref.ref(self)
 
         def signal_handler(signum, frame):
-            logger.info(f"Received signal {signum}, initiating graceful shutdown...")
-            # The finalizer will call shutdown() which will clean up containers
-            if self._finalizer is not None:
-                self._finalizer()
-            # Call original handler if it wasn't default
-            if signum == signal.SIGTERM and original_sigterm not in (signal.SIG_DFL, signal.SIG_IGN):
+            logger.info("Received signal %d, initiating graceful shutdown...", signum)
+            executor = self_ref()
+            if executor is not None and executor._finalizer is not None:
+                executor._finalizer()
+            if signum == signal.SIGTERM and callable(original_sigterm):
                 original_sigterm(signum, frame)
-            elif signum == signal.SIGINT and original_sigint not in (signal.SIG_DFL, signal.SIG_IGN):
+            elif signum == signal.SIGINT and callable(original_sigint):
                 original_sigint(signum, frame)
-            # Exit cleanly
-            import sys
             sys.exit(0)
 
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
-        logger.debug("Registered signal handlers for graceful shutdown")
 
-    def _get_host_ip(self) -> str:
-        """Get IP address accessible from Docker containers."""
-        import socket
-        # Try to get the default route IP address
+    @staticmethod
+    def _get_host_ip() -> str:
+        """Get the IP address reachable from Docker containers.
+
+        Uses a UDP connect to a non-routable address to determine the
+        outbound interface address without sending any packets.
+        """
         try:
-            # Connect to a remote address to determine the local IP
-            # used for external communication
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(0)
             try:
-                s.connect(('10.254.254.254', 1))  # Arbitrary non-routable address
-                ip = s.getsockname()[0]
+                s.connect(("10.254.254.254", 1))
+                return s.getsockname()[0]
             except Exception:
-                ip = '127.0.0.1'
+                return "127.0.0.1"
             finally:
                 s.close()
-            return ip
         except Exception:
-            return '127.0.0.1'
+            return "127.0.0.1"
 
     def _init_executor(self) -> None:
         """Initialize executor by starting Docker containers."""
@@ -286,8 +274,6 @@ class DockerDistributedExecutor(Executor):
         for it to fully initialize yet. This allows all containers to start
         simultaneously for NCCL initialization.
         """
-        import json
-
         container_name = f"vllm-worker-{rank}"
 
         # Serialize handle for passing to container
@@ -307,20 +293,17 @@ class DockerDistributedExecutor(Executor):
         total_gpus = self.parallel_config.tensor_parallel_size * self.parallel_config.pipeline_parallel_size
         all_gpus = ",".join(str(i) for i in range(total_gpus))
 
-        # Build docker run command
-        # Note: We intentionally don't use --rm so that failed containers can be
-        # inspected with 'docker logs' for debugging purposes
         cmd = [
             "docker", "run",
-            "-d",  # Detached mode
-            "--rm",  # Auto-remove container when it stops (safeguard)
+            "-d",
+            "--rm",
             "--name", container_name,
-            "--gpus", "all",  # All GPUs visible to all containers for NCCL
-            "--network", "host",  # Use host network for NCCL socket communication
-            "--ipc", "host",  # Share host IPC namespace for CUDA IPC/P2P memory
-            "--pid", "host",  # Share host PID namespace for NCCL process visibility
-            "--shm-size=8g",  # Increase shared memory for NCCL (default 64MB is too small)
-            "-v", f"{shared_volume}:{shared_volume}",  # Shared volume for handle exchange
+            "--gpus", "all",
+            "--network", "host",
+            "--ipc", "host",
+            "--pid", "host",
+            "--shm-size=8g",
+            "-v", f"{shared_volume}:{shared_volume}",
             "-e", f"VLLM_WORKER_RANK={rank}",
             "-e", f"VLLM_WORKER_LOCAL_RANK={local_rank}",
             "-e", f"VLLM_WORLD_SIZE={self.world_size}",
@@ -330,39 +313,28 @@ class DockerDistributedExecutor(Executor):
             "-e", f"VLLM_CONFIG={config_b64}",
             "-e", f"VLLM_IS_DRIVER_WORKER={str(is_driver_worker).lower()}",
             "-e", f"VLLM_DOCKER_SHARED_VOLUME={shared_volume}",
-            # ZMQ IPC socket path: must be on the shared volume so that
-            # ZMQ IPC sockets created by one container are accessible from
-            # other containers. Without this, in_the_same_node_as() detects
-            # co-location (via --ipc host shared /dev/shm) and creates
-            # local MessageQueues using ZMQ IPC, but the default IPC path
-            # (/tmp) is container-local, causing wait_until_ready() deadlock.
+            # ZMQ IPC sockets must live on the shared volume so containers
+            # can reach each other. Without this, --ipc host makes
+            # in_the_same_node_as() return True, but ZMQ IPC sockets in
+            # container-local /tmp are invisible across containers.
             "-e", f"VLLM_RPC_BASE_PATH={shared_volume}",
-            # GPU visibility: NVIDIA_VISIBLE_DEVICES controls driver-level GPU exposure
-            # All containers must see ALL GPUs for NCCL topology discovery to detect NVLink
             "-e", f"NVIDIA_VISIBLE_DEVICES={all_gpus}",
-            "-e", f"CUDA_VISIBLE_DEVICES={all_gpus}",  # All GPUs visible for NCCL
-            "-e", f"LOCAL_RANK={local_rank}",  # Each worker uses its assigned GPU
-            "-e", "HF_HOME=/root/.cache/huggingface",  # Use mounted HF cache
-            # NCCL host ID: Force same hostHash across containers so NCCL treats
-            # them as a single node (required for NVLink P2P/CUMEM transport)
-            # "-e", "NCCL_HOSTID=vllm-docker-executor",
-            # NCCL socket interface: let NCCL auto-detect, or exclude loopback
-            # Using '^lo' tells NCCL to use any interface except loopback
+            "-e", f"CUDA_VISIBLE_DEVICES={all_gpus}",
+            "-e", f"LOCAL_RANK={local_rank}",
+            "-e", "HF_HOME=/root/.cache/huggingface",
             "-e", "NCCL_SOCKET_IFNAME=^lo",
             "-e", "NCCL_DEBUG=INFO",
             "-e", "NCCL_DEBUG_SUBSYS=INIT,GRAPH",
             "-e", "PYTHONUNBUFFERED=1",
         ]
 
-        # Add HuggingFace cache mount to avoid re-downloading models
         hf_cache = os.path.expanduser("~/.cache/huggingface")
         if os.path.exists(hf_cache):
             cmd.extend(["-v", f"{hf_cache}:/root/.cache/huggingface"])
-            logger.debug(f"Mounted HuggingFace cache: {hf_cache}")
 
-        # Add model cache directory mount if specified
-        if hasattr(self.load_config, 'model_cache_dir') and self.load_config.model_cache_dir:
-            cmd.extend(["-v", f"{self.load_config.model_cache_dir}:/models"])
+        model_cache_dir = getattr(self.load_config, "model_cache_dir", None)
+        if model_cache_dir:
+            cmd.extend(["-v", f"{model_cache_dir}:/models"])
 
         # Add the image and command
         # Use vllm/vllm-docker-executor as the default image since it contains
@@ -498,23 +470,20 @@ class DockerDistributedExecutor(Executor):
         )
 
     def _serialize_vllm_config(self) -> dict:
-        """Serialize VllmConfig to a dictionary for passing to workers."""
-        from vllm.config import ModelConfig, CacheConfig, ParallelConfig
+        """Serialize VllmConfig to a JSON-safe dictionary for workers.
 
+        TODO(docker): This manually lists config fields and silently drops
+        anything not enumerated here. Consider using cloudpickle to serialize
+        the full VllmConfig (requires verifying picklability of all nested
+        objects in a container environment).
+        """
         config = self.vllm_config
 
-        # Helper to convert dtype to string that ModelConfig accepts
-        def dtype_to_str(dtype):
-            if hasattr(dtype, 'name'):
-                return dtype.name
-            dtype_str = str(dtype)
-            # Handle torch.dtype strings like 'torch.float16' -> 'float16'
-            if dtype_str.startswith('torch.'):
-                return dtype_str[6:]  # Remove 'torch.' prefix
-            return dtype_str
+        def dtype_to_str(dtype) -> str:
+            s = str(dtype)
+            return s.removeprefix("torch.") if s.startswith("torch.") else s
 
-        # Serialize the key configuration components
-        config_dict = {
+        return {
             "model_config": {
                 "model": config.model_config.model,
                 "tokenizer": config.model_config.tokenizer,
@@ -526,7 +495,6 @@ class DockerDistributedExecutor(Executor):
             "parallel_config": {
                 "tensor_parallel_size": config.parallel_config.tensor_parallel_size,
                 "pipeline_parallel_size": config.parallel_config.pipeline_parallel_size,
-                # Note: world_size and local_world_size are computed, not constructor args
             },
             "cache_config": {
                 "block_size": config.cache_config.block_size,
@@ -541,8 +509,6 @@ class DockerDistributedExecutor(Executor):
             },
         }
 
-        return config_dict
-
     def collective_rpc(
         self,
         method,
@@ -556,28 +522,25 @@ class DockerDistributedExecutor(Executor):
         assert self.rpc_broadcast_mq is not None, (
             "collective_rpc should not be called before initialization"
         )
-
         if self.is_failed:
             raise RuntimeError("Executor failed.")
 
         deadline = None if timeout is None else time.monotonic() + timeout
         kwargs = kwargs or {}
-
         output_rank = unique_reply_rank
 
-        # Serialize method if it's a callable
-        import cloudpickle
         if isinstance(method, str):
             send_method = method
         else:
             send_method = cloudpickle.dumps(method, protocol=pickle.HIGHEST_PROTOCOL)
 
-        # Broadcast to all workers
         self.rpc_broadcast_mq.enqueue((send_method, args, kwargs, output_rank))
 
-        response_mqs = self.response_mqs
+        response_mqs: Sequence[MessageQueue] = self.response_mqs
         if output_rank is not None:
             response_mqs = (response_mqs[output_rank],)
+
+        shutdown_event = self.shutdown_event
 
         def get_response():
             responses = []
@@ -587,12 +550,11 @@ class DockerDistributedExecutor(Executor):
                 )
                 try:
                     status, result = mq.dequeue(
-                        timeout=dequeue_timeout, cancel=self.shutdown_event
+                        timeout=dequeue_timeout, cancel=shutdown_event
                     )
                 except TimeoutError as e:
                     raise TimeoutError(f"RPC call to {method} timed out.") from e
-
-                if status != 0:  # ResponseStatus.SUCCESS = 0
+                if status != 0:
                     raise RuntimeError(
                         f"Worker failed with error '{result}', please check the"
                         " stack trace above for the root cause"
@@ -601,13 +563,10 @@ class DockerDistributedExecutor(Executor):
             return responses[0] if output_rank is not None else responses
 
         if non_block:
-            # Return a Future
-            from vllm.v1.executor.multiproc_executor import FutureWrapper
             future = FutureWrapper(self.futures_queue)
             self.futures_queue.appendleft((future, get_response))
             return future
 
-        # First drain any pending futures in the queue
         while self.futures_queue:
             future, get_fut_response = self.futures_queue.pop()
             future.wait_for_response(get_fut_response)
@@ -633,6 +592,10 @@ class DockerDistributedExecutor(Executor):
             non_block=non_block,
             timeout=envs.VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS,
         )
+
+    @cached_property
+    def max_concurrent_batches(self) -> int:
+        return 2 if self.scheduler_config.async_scheduling else 1
 
     def start_worker_monitor(self) -> None:
         """Start a thread to monitor worker container health."""
@@ -699,14 +662,7 @@ class DockerDistributedExecutor(Executor):
         self.collective_rpc("check_health", timeout=10)
 
     def shutdown(self) -> None:
-        """Stop and remove all worker containers.
-
-        This method is called:
-        1. On normal exit via weakref.finalize
-        2. On signal reception (SIGTERM/SIGINT)
-        3. On initialization failure
-        4. Explicitly by the user
-        """
+        """Stop and remove all worker containers."""
         if getattr(self, "shutting_down", False):
             return
         self.shutting_down = True
@@ -714,66 +670,27 @@ class DockerDistributedExecutor(Executor):
 
         logger.info("Shutting down Docker executor...")
 
-        # Stop and remove all worker containers
-        for handle in self.container_handles:
-            container_name = handle.container_name
-            logger.info(f"Cleaning up worker container {container_name}")
-
-            # Step 1: Try graceful stop (docker stop sends SIGTERM)
+        # `docker rm -f` sends SIGKILL and removes in one step.
+        # Containers were started with --rm, so this is a belt-and-suspenders
+        # approach that handles both running and stopped containers.
+        container_names = [h.container_name for h in self.container_handles]
+        if container_names:
             try:
-                result = subprocess.run(
-                    ["docker", "stop", "-t", "10", container_name],
-                    capture_output=True, text=True, timeout=15
+                subprocess.run(
+                    ["docker", "rm", "-f", *container_names],
+                    capture_output=True, text=True, timeout=30,
                 )
-                if result.returncode == 0:
-                    logger.info(f"Stopped container {container_name}")
-                else:
-                    # Container might already be stopped or removed
-                    logger.debug(f"Stop returned {result.returncode} for {container_name}: {result.stderr.strip()}")
-            except subprocess.TimeoutExpired:
-                logger.warning(f"Timeout stopping container {container_name}")
+                logger.info("Removed %d worker container(s)", len(container_names))
             except Exception as e:
-                logger.debug(f"Error stopping container {container_name}: {e}")
+                logger.warning("Error removing containers: %s", e)
 
-            # Step 2: Force kill if still running (SIGKILL)
-            try:
-                result = subprocess.run(
-                    ["docker", "kill", container_name],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    logger.info(f"Killed container {container_name}")
-            except Exception:
-                # Ignore errors - container might already be stopped
-                pass
-
-            # Step 3: Remove the container
-            try:
-                result = subprocess.run(
-                    ["docker", "rm", "-f", container_name],
-                    capture_output=True, text=True, timeout=10
-                )
-                if result.returncode == 0:
-                    logger.info(f"Removed container {container_name}")
-                else:
-                    err = result.stderr.strip()
-                    if "No such container" in err or "is not running" in err:
-                        logger.debug(f"Container {container_name} already removed")
-                    else:
-                        logger.warning(f"Failed to remove container {container_name}: {err}")
-            except Exception as e:
-                logger.debug(f"Error removing container {container_name}: {e}")
-
-        # Clean up shared volume
         shared_volume = self._DOCKER_SHARED_VOLUME
         if os.path.exists(shared_volume):
             try:
                 shutil.rmtree(shared_volume)
-                logger.info(f"Cleaned up shared volume: {shared_volume}")
             except Exception as e:
-                logger.warning(f"Failed to clean up shared volume: {e}")
+                logger.warning("Failed to clean up shared volume: %s", e)
 
-        # Clean up Python objects
         self.rpc_broadcast_mq = None
         self.response_mqs = []
         self.container_handles = []

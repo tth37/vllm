@@ -680,6 +680,7 @@ class VllmConfig:
             "mp",
             "uni",
             "external_launcher",
+            "docker",
         )
 
         if self.scheduler_config.async_scheduling:
@@ -702,9 +703,9 @@ class VllmConfig:
                     )
             if not executor_supports_async_sched:
                 raise ValueError(
-                    "Currently, async scheduling only supports `mp`, `uni`, or "
-                    "`external_launcher` distributed executor backend, but you chose "
-                    f"`{executor_backend}`."
+                    "Currently, async scheduling only supports `mp`, `uni`, "
+                    "`external_launcher`, or `docker` distributed executor "
+                    f"backend, but you chose `{executor_backend}`."
                 )
         elif self.scheduler_config.async_scheduling is None:
             # Enable async scheduling unless there is an incompatible option.
@@ -732,8 +733,8 @@ class VllmConfig:
             elif not executor_supports_async_sched:
                 logger.warning_once(
                     "Async scheduling will be disabled because it is not supported "
-                    "with the `%s` distributed executor backend (only `mp`, `uni`, and "
-                    "`external_launcher` are supported).",
+                    "with the `%s` distributed executor backend (only `mp`, `uni`, "
+                    "`external_launcher`, and `docker` are supported).",
                     executor_backend,
                     scope="local",
                 )
