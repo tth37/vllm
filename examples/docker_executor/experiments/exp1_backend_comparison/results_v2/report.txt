@@ -1,0 +1,213 @@
+================================================================
+  Experiment 1 v2: Backend Comparison Benchmark Report
+  Generated: Tue Mar 10 2026
+  Model: Qwen/Qwen3-0.6B  |  GPUs: A30 + A100
+  Dataset: ShareGPT (varied input/output lengths)
+  Benchmark: 200 prompts, rate=10 req/s, 3 warmup requests
+  Note: 64/200 requests fail (exceed max-model-len=512) — consistent across all configs
+================================================================
+
+Summary Table (136 successful requests each):
+
+┌────────────────────────────────────────────────────────────────────────────────────────────┐
+│  Configuration           │ Output    │ Total     │ Med TPOT│ Med ITL │ Med TTFT│ P99 TTFT │
+│                          │ (tok/s)   │ (tok/s)   │ (ms)    │ (ms)    │ (ms)    │ (ms)     │
+├────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 1. Host + MP + TP=1      │   991.16  │  1866.20  │  3.45   │  3.42   │  13.87  │   17.48  │
+│ 2. Host + MP + TP=2      │   992.85  │  1869.38  │  3.24   │  3.20   │  14.25  │   19.14  │
+│ 3. Docker + MP + TP=1    │   991.10  │  1866.10  │  3.46   │  3.43   │  13.80  │   18.19  │
+│ 4. Docker + MP + TP=2    │   988.59  │  1861.36  │  3.61   │  3.55   │  14.86  │   22.00  │
+│ 5. Host + DockerBE + TP=1│   788.75  │  1485.10  │  4.31   │  4.26   │  13.54  │ 6568.03  │
+│ 6. Host + DockerBE + TP=2│   783.49  │  1475.19  │  4.20   │  4.15   │  14.28  │ 6780.06  │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Legend:
+  Host + MP     = vllm serve on host, multiprocessing backend (async scheduling ON)
+  Docker + MP   = vllm serve inside Docker container, multiprocessing backend (async scheduling ON)
+  Host + DockerBE = vllm serve on host, docker executor backend (async scheduling OFF)
+
+
+═══════════════════════════ Analysis ═══════════════════════════
+
+1. V1 Anomaly Resolved: Host + MP + TP=2 is NOT slow
+─────────────────────────────────────────────────────
+   v1 result: Mean TPOT=22.09ms, Median TPOT=5.39ms (4x divergence!)
+   v2 result: Mean TPOT=3.22ms,  Median TPOT=3.24ms (healthy convergence)
+
+   Root cause of v1 anomaly:
+   - request_rate=inf dumped all 50 requests simultaneously
+   - num_warmups=0 caused CUDA graph compilation to hit first requests
+   - Identical input/output lengths (128/128) created degenerate batching
+   The v2 methodology (ShareGPT + warmup + bounded rate) eliminates all three issues.
+
+
+2. Configs 1-4 are virtually identical
+──────────────────────────────────────
+   Throughput: ~991 tok/s (±3 tok/s)
+   Median TPOT: 3.24-3.61ms (spread = 0.37ms)
+   P99 TTFT: 17-22ms
+
+   Key finding: Docker container overhead is negligible (<0.5% throughput loss).
+   TP=2 shows slightly BETTER per-token latency than TP=1 (3.24 vs 3.45ms)
+   because the model layers are split across two GPUs.
+
+
+3. Docker Backend (configs 5-6) shows significant degradation
+─────────────────────────────────────────────────────────────
+   Throughput:     783-789 tok/s   (21% lower than configs 1-4)
+   Median TPOT:   4.20-4.31ms     (25% higher)
+   P99 TTFT:      6568-6780ms     (300x worse!)
+   Duration:      25.4-25.6s      (vs 20.2s for configs 1-4)
+
+   The throughput drop comes from TWO sources:
+
+   a) Per-token latency overhead (~1ms per step)
+      Median TPOT: 4.20ms vs 3.24ms = +0.96ms
+      This is the TCP MessageQueue serialization/deserialization overhead.
+
+   b) Scheduling pipeline stall (DOMINANT factor)
+      The docker backend disables async scheduling. Without it:
+      - Schedule → Execute → Wait → Schedule → Execute → Wait (sequential)
+      vs async:
+      - Schedule N+1 overlaps with Execute N (pipelined)
+
+      Under sustained 10 req/s load, the sync scheduling can't keep up,
+      causing request queueing. Evidence:
+      - Mean TTFT: 993-1036ms (vs 14ms) — requests wait in queue
+      - P99 TTFT: 6568-6780ms — worst-case queue time
+      - Benchmark takes 25.5s (vs 20.2s) for same requests
+
+
+4. Overhead Attribution (DockerBE vs Host MP)
+─────────────────────────────────────────────
+   ┌─────────────────────────────────────────────────────────┐
+   │  Source                         │ Impact      │ Severity │
+   ├─────────────────────────────────────────────────────────┤
+   │  Async scheduling disabled      │ -21% tput   │ HIGH     │
+   │  (causes request pileup at      │ P99 TTFT    │          │
+   │   sustained load)               │ 300x worse  │          │
+   ├─────────────────────────────────────────────────────────┤
+   │  TCP MessageQueue overhead      │ +1ms TPOT   │ MEDIUM   │
+   │  (serialization + network)      │ (~25%)      │          │
+   ├─────────────────────────────────────────────────────────┤
+   │  Docker container runtime       │ <0.5%       │ LOW      │
+   │  (measured from configs 3-4)    │             │          │
+   ├─────────────────────────────────────────────────────────┤
+   │  NCCL_DEBUG=INFO logging        │ 0%          │ NONE     │
+   │  (confirmed by A/B profiling)   │             │          │
+   └─────────────────────────────────────────────────────────┘
+
+
+5. Recommended Optimizations
+────────────────────────────
+   Priority 1: Enable async scheduling for docker backend
+     This would eliminate the 21% throughput drop and 300x P99 TTFT
+     degradation. The docker executor's collective_rpc already supports
+     non_block=True and FutureWrapper — the main blocker is validation.
+
+   Priority 2: Use SHM MessageQueue when --ipc host is available
+     Would reduce the per-token overhead from ~1ms to near-zero.
+     Requires setting VLLM_RPC_BASE_PATH on the host executor process.
+
+
+════════════════════════ Detailed Results ═════════════════════
+
+── 1. Host + MP + TP=1 ──
+  Successful requests:                     136
+  Benchmark duration (s):                  20.24
+  Request throughput (req/s):              6.72
+  Output token throughput (tok/s):         991.16
+  Total token throughput (tok/s):          1866.20
+  Mean TTFT (ms):                          13.85
+  Median TTFT (ms):                        13.87
+  P99 TTFT (ms):                           17.48
+  Mean TPOT (ms):                          3.41
+  Median TPOT (ms):                        3.45
+  P99 TPOT (ms):                           3.68
+  Mean ITL (ms):                           3.40
+  Median ITL (ms):                         3.42
+  P99 ITL (ms):                            4.38
+
+── 2. Host + MP + TP=2 ──
+  Successful requests:                     136
+  Benchmark duration (s):                  20.20
+  Request throughput (req/s):              6.73
+  Output token throughput (tok/s):         992.85
+  Total token throughput (tok/s):          1869.38
+  Mean TTFT (ms):                          14.62
+  Median TTFT (ms):                        14.25
+  P99 TTFT (ms):                           19.14
+  Mean TPOT (ms):                          3.22
+  Median TPOT (ms):                        3.24
+  P99 TPOT (ms):                           3.44
+  Mean ITL (ms):                           3.22
+  Median ITL (ms):                         3.20
+  P99 ITL (ms):                            4.45
+
+── 3. Docker Container + MP + TP=1 ──
+  Successful requests:                     136
+  Benchmark duration (s):                  20.24
+  Request throughput (req/s):              6.72
+  Output token throughput (tok/s):         991.10
+  Total token throughput (tok/s):          1866.10
+  Mean TTFT (ms):                          13.93
+  Median TTFT (ms):                        13.80
+  P99 TTFT (ms):                           18.19
+  Mean TPOT (ms):                          3.42
+  Median TPOT (ms):                        3.46
+  P99 TPOT (ms):                           3.68
+  Mean ITL (ms):                           3.42
+  Median ITL (ms):                         3.43
+  P99 ITL (ms):                            4.27
+
+── 4. Docker Container + MP + TP=2 ──
+  Successful requests:                     136
+  Benchmark duration (s):                  20.29
+  Request throughput (req/s):              6.70
+  Output token throughput (tok/s):         988.59
+  Total token throughput (tok/s):          1861.36
+  Mean TTFT (ms):                          15.46
+  Median TTFT (ms):                        14.86
+  P99 TTFT (ms):                           22.00
+  Mean TPOT (ms):                          3.58
+  Median TPOT (ms):                        3.61
+  P99 TPOT (ms):                           3.86
+  Mean ITL (ms):                           3.57
+  Median ITL (ms):                         3.55
+  P99 ITL (ms):                            4.71
+
+── 5. Host + Docker Backend + TP=1 ──
+  Successful requests:                     136
+  Benchmark duration (s):                  25.43
+  Request throughput (req/s):              5.35
+  Output token throughput (tok/s):         788.75
+  Total token throughput (tok/s):          1485.10
+  Mean TTFT (ms):                          992.68
+  Median TTFT (ms):                        13.54
+  P99 TTFT (ms):                           6568.03
+  Mean TPOT (ms):                          6.76
+  Median TPOT (ms):                        4.31
+  P99 TPOT (ms):                           46.85
+  Mean ITL (ms):                           6.78
+  Median ITL (ms):                         4.26
+  P99 ITL (ms):                            7.15
+
+── 6. Host + Docker Backend + TP=2 ──
+  Successful requests:                     136
+  Benchmark duration (s):                  25.60
+  Request throughput (req/s):              5.31
+  Output token throughput (tok/s):         783.49
+  Total token throughput (tok/s):          1475.19
+  Mean TTFT (ms):                          1035.72
+  Median TTFT (ms):                        14.28
+  P99 TTFT (ms):                           6780.06
+  Mean TPOT (ms):                          6.85
+  Median TPOT (ms):                        4.20
+  P99 TPOT (ms):                           48.21
+  Mean ITL (ms):                           6.79
+  Median ITL (ms):                         4.15
+  P99 ITL (ms):                            8.03
+
+================================================================
+  End of Report
+================================================================

@@ -1,0 +1,154 @@
+================================================================
+  Experiment 1: Backend Comparison Benchmark Report
+  Generated: Tue Mar 10 2026
+  Model: Qwen/Qwen3-0.6B
+  GPUs: GPU0=A30(24GB), GPU1=A100-PCIE(40GB)
+  Benchmark: 50 prompts, 128 input / 128 output tokens, request_rate=inf
+================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  Configuration           │ Throughput  │ Token/s   │ Total     │ TTFT     │ TPOT     │ ITL        │
+│                          │ (req/s)     │ (output)  │ (tok/s)   │ mean(ms) │ med(ms)  │ med(ms)    │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 1. Host + MP + TP=1      │    6.51     │   832.89  │  1665.79  │  7050.75 │   4.90   │   4.55     │
+│ 2. Host + MP + TP=2      │    6.65     │   851.75  │  1703.51  │  4699.21 │   5.39   │   4.71     │
+│ 3. Docker + MP + TP=1    │    6.49     │   830.61  │  1661.23  │  7054.30 │   5.06   │   4.63     │
+│ 4. Docker + MP + TP=2    │    6.32     │   808.86  │  1617.73  │  6973.87 │   6.16   │   5.53     │
+│ 5. Host + DockerBE + TP=1│    6.44     │   824.43  │  1648.85  │  6812.84 │   6.27   │   5.67     │
+│ 6. Host + DockerBE + TP=2│    6.28*    │   803.50* │  1607.00* │  6960.40*│   6.65*  │   5.98*    │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+* Exp 6 was re-run under profiling conditions (no GPU contention).
+  Original run showed Median TPOT=13.5ms due to external GPU interference.
+  See profile_report.txt for deep-dive analysis.
+
+Legend:
+  Host + MP     = vllm serve on host, multiprocessing backend (default)
+  Docker + MP   = vllm serve inside Docker container, multiprocessing backend
+  Host + DockerBE = vllm serve on host, docker distributed executor backend
+
+────────────────────── Detailed Results ──────────────────────
+
+── 1. Host + MP + TP=1 ──
+  Successful requests:                     50
+  Benchmark duration (s):                  7.68
+  Request throughput (req/s):              6.51
+  Output token throughput (tok/s):         832.89
+  Total token throughput (tok/s):          1665.79
+  Mean TTFT (ms):                          7050.75
+  Median TTFT (ms):                        7047.11
+  P99 TTFT (ms):                           7076.78
+  Mean TPOT (ms):                          4.89
+  Median TPOT (ms):                        4.90
+  P99 TPOT (ms):                           5.05
+  Mean ITL (ms):                           4.89
+  Median ITL (ms):                         4.55
+  P99 ITL (ms):                            8.65
+
+── 2. Host + MP + TP=2 ──
+  Successful requests:                     50
+  Benchmark duration (s):                  7.51
+  Request throughput (req/s):              6.65
+  Output token throughput (tok/s):         851.75
+  Total token throughput (tok/s):          1703.51
+  Mean TTFT (ms):                          4699.21
+  Median TTFT (ms):                        6821.39
+  P99 TTFT (ms):                           6854.16
+  Mean TPOT (ms):                          22.09
+  Median TPOT (ms):                        5.39
+  P99 TPOT (ms):                           57.88
+  Mean ITL (ms):                           22.09
+  Median ITL (ms):                         4.71
+  P99 ITL (ms):                            32.71
+
+── 3. Docker Container + MP + TP=1 ──
+  Successful requests:                     50
+  Benchmark duration (s):                  7.71
+  Request throughput (req/s):              6.49
+  Output token throughput (tok/s):         830.61
+  Total token throughput (tok/s):          1661.23
+  Mean TTFT (ms):                          7054.30
+  Median TTFT (ms):                        7050.52
+  P99 TTFT (ms):                           7081.48
+  Mean TPOT (ms):                          5.04
+  Median TPOT (ms):                        5.06
+  P99 TPOT (ms):                           5.21
+  Mean ITL (ms):                           5.05
+  Median ITL (ms):                         4.63
+  P99 ITL (ms):                            8.80
+
+── 4. Docker Container + MP + TP=2 ──
+  Successful requests:                     50
+  Benchmark duration (s):                  7.91
+  Request throughput (req/s):              6.32
+  Output token throughput (tok/s):         808.86
+  Total token throughput (tok/s):          1617.73
+  Mean TTFT (ms):                          6973.87
+  Median TTFT (ms):                        7110.81
+  P99 TTFT (ms):                           7159.18
+  Mean TPOT (ms):                          7.24
+  Median TPOT (ms):                        6.16
+  P99 TPOT (ms):                           34.29
+  Mean ITL (ms):                           7.24
+  Median ITL (ms):                         5.53
+  P99 ITL (ms):                            10.06
+
+── 5. Host + Docker Backend + TP=1 ──
+  Successful requests:                     50
+  Benchmark duration (s):                  7.76
+  Request throughput (req/s):              6.44
+  Output token throughput (tok/s):         824.43
+  Total token throughput (tok/s):          1648.85
+  Mean TTFT (ms):                          6812.84
+  Median TTFT (ms):                        6948.63
+  P99 TTFT (ms):                           6983.20
+  Mean TPOT (ms):                          7.34
+  Median TPOT (ms):                        6.27
+  P99 TPOT (ms):                           33.75
+  Mean ITL (ms):                           7.34
+  Median ITL (ms):                         5.67
+  P99 ITL (ms):                            12.05
+
+── 6. Host + Docker Backend + TP=2 (profiling re-run) ──
+  Successful requests:                     50
+  Benchmark duration (s):                  7.96
+  Request throughput (req/s):              6.28
+  Output token throughput (tok/s):         803.50
+  Total token throughput (tok/s):          1606.99
+  Mean TTFT (ms):                          6960.40
+  Median TTFT (ms):                        7098.68
+  P99 TTFT (ms):                           7142.46
+  Mean TPOT (ms):                          7.74
+  Median TPOT (ms):                        6.65
+  P99 TPOT (ms):                           34.74
+  Mean ITL (ms):                           7.74
+  Median ITL (ms):                         5.98
+  P99 ITL (ms):                            10.68
+
+════════════════════════ Analysis ════════════════════════
+
+1. TP=1 Baseline (Host vs Docker vs DockerBE):
+   - All three TP=1 configs achieve nearly identical throughput (~830 tok/s output)
+   - Docker container overhead is negligible for TP=1 (3% TPOT increase)
+   - Docker backend adds ~28% TPOT increase due to TCP MessageQueue overhead
+
+2. TP=2 Comparison:
+   - Host MP: Median TPOT 5.39ms (baseline, async scheduling enabled)
+   - Docker Container MP: Median TPOT 6.16ms (+14%, container runtime overhead)
+   - Docker Backend: Median TPOT 6.65ms (+23%, TCP MQ + sync scheduling)
+
+3. Overhead Breakdown (see profile_report.txt for deep-dive):
+   - NCCL_DEBUG=INFO: 0% impact (confirmed by A/B test)
+   - Docker container runtime: ~0.77ms (+14%)
+   - TCP MessageQueue + sync scheduling: ~0.49ms (+9%)
+   - Total DockerBE overhead vs Host MP: ~1.26ms (+23%)
+
+4. Key Finding:
+   - The initial Exp 6 showing 13-17ms TPOT was due to external GPU contention
+   - Under clean conditions, DockerBE overhead is modest (23%)
+   - For larger models where inference dominates (>100ms per step),
+     the 1.3ms control plane overhead would be <1.3% — negligible
+
+================================================================
+  End of Report
+================================================================

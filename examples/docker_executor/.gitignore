@@ -1,2 +1,4 @@
 *.json
 *.txt
+# But keep experiment results
+!experiments/**/*.txt
