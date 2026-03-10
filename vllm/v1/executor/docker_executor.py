@@ -316,7 +316,9 @@ class DockerDistributedExecutor(Executor):
             "--rm",  # Auto-remove container when it stops (safeguard)
             "--name", container_name,
             "--gpus", "all",  # All GPUs visible to all containers for NCCL
-            "--network", "host",  # Use host network for simplicity
+            "--network", "host",  # Use host network for NCCL socket communication
+            "--ipc", "host",  # Share host IPC namespace for CUDA IPC/P2P memory
+            "--pid", "host",  # Share host PID namespace for NCCL process visibility
             "--shm-size=8g",  # Increase shared memory for NCCL (default 64MB is too small)
             "-v", f"{shared_volume}:{shared_volume}",  # Shared volume for handle exchange
             "-e", f"VLLM_WORKER_RANK={rank}",
@@ -328,14 +330,35 @@ class DockerDistributedExecutor(Executor):
             "-e", f"VLLM_CONFIG={config_b64}",
             "-e", f"VLLM_IS_DRIVER_WORKER={str(is_driver_worker).lower()}",
             "-e", f"VLLM_DOCKER_SHARED_VOLUME={shared_volume}",
+            # ZMQ IPC socket path: must be on the shared volume so that
+            # ZMQ IPC sockets created by one container are accessible from
+            # other containers. Without this, in_the_same_node_as() detects
+            # co-location (via --ipc host shared /dev/shm) and creates
+            # local MessageQueues using ZMQ IPC, but the default IPC path
+            # (/tmp) is container-local, causing wait_until_ready() deadlock.
+            "-e", f"VLLM_RPC_BASE_PATH={shared_volume}",
+            # GPU visibility: NVIDIA_VISIBLE_DEVICES controls driver-level GPU exposure
+            # All containers must see ALL GPUs for NCCL topology discovery to detect NVLink
+            "-e", f"NVIDIA_VISIBLE_DEVICES={all_gpus}",
             "-e", f"CUDA_VISIBLE_DEVICES={all_gpus}",  # All GPUs visible for NCCL
             "-e", f"LOCAL_RANK={local_rank}",  # Each worker uses its assigned GPU
+            "-e", "HF_HOME=/root/.cache/huggingface",  # Use mounted HF cache
+            # NCCL host ID: Force same hostHash across containers so NCCL treats
+            # them as a single node (required for NVLink P2P/CUMEM transport)
+            # "-e", "NCCL_HOSTID=vllm-docker-executor",
             # NCCL socket interface: let NCCL auto-detect, or exclude loopback
             # Using '^lo' tells NCCL to use any interface except loopback
             "-e", "NCCL_SOCKET_IFNAME=^lo",
-            "-e", "NCCL_DEBUG=WARN",
+            "-e", "NCCL_DEBUG=INFO",
+            "-e", "NCCL_DEBUG_SUBSYS=INIT,GRAPH",
             "-e", "PYTHONUNBUFFERED=1",
         ]
+
+        # Add HuggingFace cache mount to avoid re-downloading models
+        hf_cache = os.path.expanduser("~/.cache/huggingface")
+        if os.path.exists(hf_cache):
+            cmd.extend(["-v", f"{hf_cache}:/root/.cache/huggingface"])
+            logger.debug(f"Mounted HuggingFace cache: {hf_cache}")
 
         # Add model cache directory mount if specified
         if hasattr(self.load_config, 'model_cache_dir') and self.load_config.model_cache_dir:
