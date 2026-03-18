@@ -1,0 +1,58 @@
+================================================================
+  Experiment 1 Reproduction Report
+  Generated: 2026-03-17 03:39:32 UTC
+  Git branch: exp1/dockerbe_async
+  Source dir: /tmp/vllm-exp1-worktrees/dockerbe_async
+  Git commit: 37f09f135
+  Docker image: vllm/vllm-docker-executor:exp1-dockerbe_async
+  Canonical built source: /home/thd/repositories/vllm-dev/vllm-source
+  Model: Qwen/Qwen3-0.6B
+  GPUs: CUDA_VISIBLE_DEVICES=0,1
+  Dataset: ShareGPT (/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json)
+  Benchmark: 200 prompts, rate=10 req/s, 3 warmups, --ignore-eos
+================================================================
+
+Host runtime note:
+  Host-side runs synced ignored compiled vLLM artifacts from
+  /home/thd/repositories/vllm-dev/vllm-source into the worktree before launch.
+
+Dataset note:
+  The current vLLM bench/server stack rejected the same 64 ShareGPT requests
+  as 400 Bad Request on every rerun. The remaining 136 successful requests are
+  therefore directly comparable across branches.
+
+── 5_host_dockerbe_tp1 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     136       
+Failed requests:                         64        
+Benchmark duration (s):                  25.38     
+Request throughput (req/s):              5.36      
+Output token throughput (tok/s):         790.21    
+Peak concurrent requests:                34.00     
+Mean TTFT (ms):                          1012.27   
+Median TTFT (ms):                        16.04     
+P99 TTFT (ms):                           6656.30   
+Mean TPOT (ms):                          6.50      
+Median TPOT (ms):                        4.03      
+P99 TPOT (ms):                           47.01     
+Mean ITL (ms):                           6.52      
+Median ITL (ms):                         3.99      
+P99 ITL (ms):                            6.79      
+
+── 6_host_dockerbe_tp2 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     136       
+Failed requests:                         64        
+Benchmark duration (s):                  25.40     
+Request throughput (req/s):              5.35      
+Output token throughput (tok/s):         789.82    
+Peak concurrent requests:                34.00     
+Mean TTFT (ms):                          1018.35   
+Median TTFT (ms):                        16.72     
+P99 TTFT (ms):                           6682.51   
+Mean TPOT (ms):                          6.57      
+Median TPOT (ms):                        3.99      
+P99 TPOT (ms):                           47.34     
+Mean ITL (ms):                           6.53      
+Median ITL (ms):                         3.94      
+P99 ITL (ms):                            7.52      

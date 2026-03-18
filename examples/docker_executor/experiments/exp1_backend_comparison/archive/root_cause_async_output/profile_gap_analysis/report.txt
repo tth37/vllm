@@ -1,0 +1,45 @@
+==============================================================
+  Exp1 RPC/MQ Gap Analysis
+==============================================================
+
+Benchmark recap (TP=2, 200 ShareGPT prompts, rate=10, warmups=3)
+- Baseline host MP: median TPOT=3.27, output tok/s=991.57, successful=136, failed=64
+- DockerBE full SHM: median TPOT=3.69, output tok/s=991.75, successful=136, failed=64
+
+Per-call timing comparison
+- Host execute_model total: baseline=3.398 ms, docker=5.807 ms, delta=+2.409 ms
+- Host sample_tokens total: baseline=6.425 ms, docker=11.175 ms, delta=+4.750 ms
+- Worker execute_model compute: baseline=0.804 ms, docker=1.036 ms, delta=+0.232 ms
+- Worker sample_tokens compute: baseline=0.468 ms, docker=2.523 ms, delta=+2.055 ms
+- Host broadcast enqueue total: baseline=0.024 ms, docker=0.025 ms, delta=+0.002 ms
+- Host broadcast serialize only: baseline=0.006 ms, docker=0.007 ms, delta=+0.001 ms
+- Worker broadcast deserialize: baseline=0.018 ms, docker=0.023 ms, delta=+0.004 ms
+- Output worker response serialize: baseline=0.005 ms, docker=0.005 ms, delta=-0.001 ms
+- Host response dequeue total: baseline=3.049 ms, docker=6.775 ms, delta=+3.727 ms
+- Host response deserialize: baseline=0.009 ms, docker=0.008 ms, delta=-0.001 ms
+- Worker execute_model response enqueue: baseline=0.017 ms, docker=0.016 ms, delta=-0.001 ms
+- Worker sample_tokens response enqueue: baseline=0.029 ms, docker=0.033 ms, delta=+0.004 ms
+- Worker execute_model output materialize: baseline=n/a, docker=n/a, delta=n/a
+- Worker sample_tokens output materialize: baseline=3.183 ms, docker=3.657 ms, delta=+0.475 ms
+
+Non-compute gap estimate
+- execute_model host_total - worker_compute: baseline=2.594 ms, docker=4.771 ms
+- sample_tokens host_total - worker_compute: baseline=5.957 ms, docker=8.652 ms
+
+Key findings
+- The execute_model gap is dominated by response availability on the host side: host total grew by 2.409 ms, while worker compute changed by only 0.232 ms.
+- Output materialization is now measured explicitly: execute_model changed by 0.000 ms, and sample_tokens changed by 0.475 ms.
+- The host response dequeue delta is almost entirely wait time, not SHM read cost: dequeue total moved by 3.727 ms, but response deserialize stayed -0.001 ms.
+- sample_tokens has two effects: worker compute increased by 2.055 ms, and the remaining non-compute gap still grew to 8.652 ms.
+- Broadcast serialization and SHM write/read costs stayed in the tens of microseconds, so the remaining bottleneck is not the raw MessageQueue transport path.
+
+Profiler coverage
+- Baseline profile files: 6
+- Docker profile files: 4
+- Baseline host execute_model calls captured: 6136
+- Docker host execute_model calls captured: 3674
+
+Interpretation guide
+- If the host-total delta is much larger than the serialize/enqueue/dequeue deltas, the remaining gap is likely worker wakeup/coordination overhead rather than raw SHM copy cost.
+- If host broadcast serialize grows materially, SchedulerOutput serialization is a likely bottleneck.
+- If host response dequeue and worker response enqueue stay tiny, the response MQ is probably not the dominant remaining cost.

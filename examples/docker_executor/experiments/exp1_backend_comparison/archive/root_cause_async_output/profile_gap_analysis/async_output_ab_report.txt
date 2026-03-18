@@ -1,0 +1,60 @@
+Exp1 Docker Async Output A/B
+============================
+
+Setup
+- Date: 2026-03-18
+- Host: node191
+- GPUs: GPU_DEVICES=1,2 (two NVIDIA A100-PCIE-40GB)
+- Model: Qwen/Qwen3-0.6B
+- Benchmark: 200 ShareGPT prompts, 10 req/s, 3 warmups
+- Dataset note: both runs saw the same 64/200 Bad Request failures, so the
+  successful-request set stayed comparable.
+
+Compared runs
+- Sync output copy disabled:
+  VLLM_DOCKER_ASYNC_OUTPUT_COPY=0
+  Results dir: profile_gap_sync_output/
+- Async output copy enabled:
+  VLLM_DOCKER_ASYNC_OUTPUT_COPY=1
+  Results dir: profile_gap_async_output/
+
+Headline result
+- Disabling Docker async output copy reproduces the old gap:
+  baseline median TPOT 3.61 ms, Docker median TPOT 3.92 ms,
+  Docker output tok/s 789.99.
+- Enabling Docker async output copy removes that gap on the same hardware:
+  baseline median TPOT 3.60 ms, Docker median TPOT 3.35 ms,
+  Docker output tok/s 991.53.
+
+Per-run summary
+- Sync-output run:
+  baseline tok/s 988.61, median TPOT 3.61 ms
+  Docker tok/s 789.99, median TPOT 3.92 ms
+  Host execute_model delta +2.474 ms
+  Host sample_tokens delta +3.622 ms
+  Worker sample_tokens compute delta +1.443 ms
+  Host response dequeue delta +3.258 ms
+
+- Async-output run:
+  baseline tok/s 988.74, median TPOT 3.60 ms
+  Docker tok/s 991.53, median TPOT 3.35 ms
+  Host execute_model delta -0.176 ms
+  Host sample_tokens delta -0.341 ms
+  Worker sample_tokens compute delta +0.030 ms
+  Host response dequeue delta +1.597 ms
+
+Conclusion
+- The missing async output-copy path in docker_worker_entrypoint was the main
+  cause of the previously observed Docker Distributed Executor performance
+  loss.
+- When Docker handles outputs synchronously, sample_tokens postprocessing stays
+  on the worker's critical path, which delays later RPC responses and recreates
+  the old ~790 tok/s / ~3.9 ms TPOT behavior.
+- Once Docker uses the same async output-copy model as MultiprocExecutor, the
+  worker compute gap nearly disappears and end-to-end throughput matches the
+  host multiprocess baseline on the matched A100 pair.
+
+Residual note
+- Even in the async-output run, host response dequeue time is still somewhat
+  higher than baseline (+1.597 ms avg), but it no longer translates into a
+  meaningful median TPOT or throughput regression in this matched-GPU setup.

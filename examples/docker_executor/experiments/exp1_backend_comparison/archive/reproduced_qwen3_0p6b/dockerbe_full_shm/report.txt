@@ -1,0 +1,76 @@
+================================================================
+  Experiment 1 Reproduction Report
+  Generated: 2026-03-17 03:57:20 UTC
+  Git branch: exp1/dockerbe_full_shm
+  Source dir: /tmp/vllm-exp1-worktrees/dockerbe_full_shm
+  Git commit: f46bca67b
+  Docker image: vllm/vllm-docker-executor:exp1-dockerbe_full_shm
+  Canonical built source: /home/thd/repositories/vllm-dev/vllm-source
+  Model: Qwen/Qwen3-0.6B
+  GPUs: CUDA_VISIBLE_DEVICES=0,1
+  Dataset: ShareGPT (/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json)
+  Benchmark: 200 prompts, rate=10 req/s, 3 warmups, --ignore-eos
+================================================================
+
+Host runtime note:
+  Host-side runs synced ignored compiled vLLM artifacts from
+  /home/thd/repositories/vllm-dev/vllm-source into the worktree before launch.
+
+Dataset note:
+  The current vLLM bench/server stack rejected the same 64 ShareGPT requests
+  as 400 Bad Request on every rerun. The remaining 136 successful requests are
+  therefore directly comparable across branches.
+
+── 2_host_mp_tp2 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     136       
+Failed requests:                         64        
+Benchmark duration (s):                  20.20     
+Request throughput (req/s):              6.73      
+Output token throughput (tok/s):         992.96    
+Peak concurrent requests:                14.00     
+Mean TTFT (ms):                          14.20     
+Median TTFT (ms):                        13.93     
+P99 TTFT (ms):                           19.20     
+Mean TPOT (ms):                          3.21      
+Median TPOT (ms):                        3.23      
+P99 TPOT (ms):                           3.44      
+Mean ITL (ms):                           3.20      
+Median ITL (ms):                         3.18      
+P99 ITL (ms):                            4.19      
+
+── 5_host_dockerbe_tp1 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     136       
+Failed requests:                         64        
+Benchmark duration (s):                  25.39     
+Request throughput (req/s):              5.36      
+Output token throughput (tok/s):         790.14    
+Peak concurrent requests:                34.00     
+Mean TTFT (ms):                          1003.86   
+Median TTFT (ms):                        16.13     
+P99 TTFT (ms):                           6613.74   
+Mean TPOT (ms):                          6.57      
+Median TPOT (ms):                        4.10      
+P99 TPOT (ms):                           46.93     
+Mean ITL (ms):                           6.59      
+Median ITL (ms):                         4.05      
+P99 ITL (ms):                            6.75      
+
+── 6_host_dockerbe_tp2 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     136       
+Failed requests:                         64        
+Benchmark duration (s):                  25.58     
+Request throughput (req/s):              5.32      
+Output token throughput (tok/s):         784.06    
+Peak concurrent requests:                34.00     
+Mean TTFT (ms):                          1055.54   
+Median TTFT (ms):                        16.98     
+P99 TTFT (ms):                           6868.91   
+Mean TPOT (ms):                          6.63      
+Median TPOT (ms):                        3.98      
+P99 TPOT (ms):                           48.49     
+Mean ITL (ms):                           6.59      
+Median ITL (ms):                         3.93      
+P99 ITL (ms):                            7.64      
