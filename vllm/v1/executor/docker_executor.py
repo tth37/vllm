@@ -31,9 +31,18 @@ import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.distributed.device_communicators.shm_broadcast import Handle, MessageQueue
 from vllm.logger import init_logger
+from vllm.utils.rpc_profiling import (
+    flush_rpc_profile,
+    flush_rpc_profile_worker,
+    get_rpc_profiler,
+    set_rpc_profile_metadata,
+)
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.executor.abstract import Executor, FailureCallback
-from vllm.v1.executor.multiproc_executor import FutureWrapper
+from vllm.v1.executor.multiproc_executor import (
+    FutureWrapper,
+    set_multiprocessing_worker_envs,
+)
 
 logger = init_logger(__name__)
 
@@ -66,6 +75,7 @@ class DockerDistributedExecutor(Executor):
         self.monitor_workers = monitor_workers
         self.container_handles: list[DockerWorkerHandle] = []
         self.host_ip = self._get_host_ip()
+        self._rpc_profiler = get_rpc_profiler()
         self._finalizer: weakref.finalize | None = None
         self.is_failed = False
         self.shutdown_event = threading.Event()
@@ -156,7 +166,6 @@ class DockerDistributedExecutor(Executor):
 
     def _init_executor(self) -> None:
         """Initialize executor by starting Docker containers."""
-        # Register shutdown at exit
         self._finalizer = weakref.finalize(self, self.shutdown)
 
         tp_size = self.parallel_config.tensor_parallel_size
@@ -164,22 +173,49 @@ class DockerDistributedExecutor(Executor):
         pcp_size = self.parallel_config.prefill_context_parallel_size
         self.world_size = tp_size * pp_size * pcp_size
 
-        # Get distributed init method for NCCL
+        # Match the multiprocess executor's CPU-thread policy so host-side
+        # scheduling and worker containers do not oversubscribe the CPU by
+        # default when OMP_NUM_THREADS is unset.
+        set_multiprocessing_worker_envs()
+
         from vllm.utils.network_utils import get_distributed_init_method
         self.distributed_init_method = get_distributed_init_method(
             self.host_ip, get_open_port()
         )
+        set_rpc_profile_metadata(
+            role="docker_host",
+            executor="docker",
+            process_kind="executor_host",
+            host_ip=self.host_ip,
+            async_output_copy_env=os.environ.get(
+                "VLLM_DOCKER_ASYNC_OUTPUT_COPY", "1"
+            ),
+            world_size=self.world_size,
+            tensor_parallel_size=tp_size,
+            pipeline_parallel_size=pp_size,
+            prefill_context_parallel_size=pcp_size,
+        )
 
-        # Create network-based MessageQueue (no shared memory)
-        # Force remote communication via ZMQ TCP
+        # Redirect ZMQ IPC sockets to the shared volume so that both the
+        # host executor and Docker containers (which mount this volume) can
+        # access the same IPC socket paths.  Must be set BEFORE creating
+        # any MessageQueue so that get_open_zmq_ipc_path() picks it up.
+        shared_volume = self._DOCKER_SHARED_VOLUME
+        os.makedirs(shared_volume, exist_ok=True)
+        self._original_rpc_base_path = os.environ.get("VLLM_RPC_BASE_PATH")
+        os.environ["VLLM_RPC_BASE_PATH"] = shared_volume
+
+        # Use shared-memory MessageQueue: with --ipc host and --pid host,
+        # containers share the host's /dev/shm, so SHM ring buffers are
+        # directly accessible across the host and all containers.
         max_chunk_bytes = envs.VLLM_MQ_MAX_CHUNK_BYTES_MB * 1024 * 1024
         self.rpc_broadcast_mq = MessageQueue(
             n_reader=self.world_size,
-            n_local_reader=0,  # No local shared memory readers - all network
+            n_local_reader=self.world_size,
             max_chunk_bytes=max_chunk_bytes,
             max_chunks=10,
             connect_ip=self.host_ip,
-        )
+        ).set_profile_label("docker.host.rpc_broadcast")
 
         # Get scheduler output handle for passing to workers
         scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
@@ -225,16 +261,13 @@ class DockerDistributedExecutor(Executor):
                 if handle.worker_response_mq is not None
             ]
 
-            # Note: We intentionally do NOT call wait_until_ready() on response_mqs.
-            # This would create a circular wait with the worker:
-            # - Reader (executor) waits for writer's READY signal
-            # - Writer (worker) waits for reader subscription
-            # - Both wait for each other = deadlock
-            #
-            # Instead, we trust that the connection is established when we
-            # receive the handle file from the worker. Synchronization happens
-            # naturally when we try to dequeue responses.
-            logger.info(f"Collected {len(self.response_mqs)} response MQs (sync deferred)")
+            # Response MQs use SHM (workers chmod the segment + IPC socket
+            # to world-accessible after creation).  Sync after broadcast MQ
+            # is ready so both sides call wait_until_ready() in the same order.
+            for i, mq in enumerate(self.response_mqs):
+                mq.wait_until_ready()
+                logger.debug("Response MQ %d ready (SHM)", i)
+            logger.info("All %d response MQs ready (SHM)", len(self.response_mqs))
 
             self.futures_queue = deque[tuple[Future, Any]]()
 
@@ -332,9 +365,26 @@ class DockerDistributedExecutor(Executor):
         if os.path.exists(hf_cache):
             cmd.extend(["-v", f"{hf_cache}:/root/.cache/huggingface"])
 
+        profile_dir = os.environ.get("VLLM_RPC_PROFILE_DIR")
+        if profile_dir:
+            os.makedirs(profile_dir, exist_ok=True)
+            cmd.extend(["-v", f"{profile_dir}:{profile_dir}"])
+            cmd.extend(["-e", f"VLLM_RPC_PROFILE_DIR={profile_dir}"])
+
         model_cache_dir = getattr(self.load_config, "model_cache_dir", None)
         if model_cache_dir:
             cmd.extend(["-v", f"{model_cache_dir}:/models"])
+
+        if docker_async_output_copy := os.environ.get(
+            "VLLM_DOCKER_ASYNC_OUTPUT_COPY"
+        ):
+            cmd.extend(
+                ["-e", f"VLLM_DOCKER_ASYNC_OUTPUT_COPY={docker_async_output_copy}"]
+            )
+        if omp_num_threads := os.environ.get("OMP_NUM_THREADS"):
+            cmd.extend(["-e", f"OMP_NUM_THREADS={omp_num_threads}"])
+        if mkl_num_threads := os.environ.get("MKL_NUM_THREADS"):
+            cmd.extend(["-e", f"MKL_NUM_THREADS={mkl_num_threads}"])
 
         # Add the image and command
         # Use vllm/vllm-docker-executor as the default image since it contains
@@ -454,13 +504,16 @@ class DockerDistributedExecutor(Executor):
         # Deserialize the handle
         response_handle_bytes = base64.b64decode(response_handle_b64)
         response_handle = pickle.loads(response_handle_bytes)
-        logger.info(f"Got response handle from worker {rank}: {response_handle.remote_subscribe_addr}")
+        logger.info(f"Got response handle from worker {rank}: "
+                    f"local={response_handle.local_subscribe_addr}, "
+                    f"shm={response_handle.buffer_handle[3] if response_handle.buffer_handle else None}")
 
         # Create a connection to the worker's response MQ
         # The worker creates the MQ with n_reader=1 (expecting the executor to read)
         # We connect as rank 0 (the reader) since we dequeue responses
         logger.info(f"Connecting to worker {rank} response MQ as reader...")
         response_mq = MessageQueue.create_from_handle(response_handle, 0)
+        response_mq.set_profile_label(f"docker.host.response.rank{rank}")
         logger.info(f"Connected to worker {rank} response MQ")
 
         return DockerWorkerHandle(
@@ -528,13 +581,19 @@ class DockerDistributedExecutor(Executor):
         deadline = None if timeout is None else time.monotonic() + timeout
         kwargs = kwargs or {}
         output_rank = unique_reply_rank
+        rpc_start = time.perf_counter()
+        method_name = method if isinstance(method, str) else "callable"
 
         if isinstance(method, str):
             send_method = method
         else:
             send_method = cloudpickle.dumps(method, protocol=pickle.HIGHEST_PROTOCOL)
 
+        send_start = time.perf_counter()
         self.rpc_broadcast_mq.enqueue((send_method, args, kwargs, output_rank))
+        self._record_rpc_metric(
+            method_name, "host_send_s", time.perf_counter() - send_start
+        )
 
         response_mqs: Sequence[MessageQueue] = self.response_mqs
         if output_rank is not None:
@@ -543,23 +602,35 @@ class DockerDistributedExecutor(Executor):
         shutdown_event = self.shutdown_event
 
         def get_response():
+            response_wait_start = time.perf_counter()
             responses = []
-            for mq in response_mqs:
-                dequeue_timeout = (
-                    None if deadline is None else (deadline - time.monotonic())
+            try:
+                for mq in response_mqs:
+                    dequeue_timeout = (
+                        None if deadline is None else (deadline - time.monotonic())
+                    )
+                    try:
+                        status, result = mq.dequeue(
+                            timeout=dequeue_timeout, cancel=shutdown_event
+                        )
+                    except TimeoutError as e:
+                        raise TimeoutError(f"RPC call to {method} timed out.") from e
+                    if status != 0:
+                        raise RuntimeError(
+                            f"Worker failed with error '{result}', please check the"
+                            " stack trace above for the root cause"
+                        )
+                    responses.append(result)
+            finally:
+                self._record_rpc_metric(
+                    method_name,
+                    "host_response_wait_s",
+                    time.perf_counter() - response_wait_start,
                 )
-                try:
-                    status, result = mq.dequeue(
-                        timeout=dequeue_timeout, cancel=shutdown_event
-                    )
-                except TimeoutError as e:
-                    raise TimeoutError(f"RPC call to {method} timed out.") from e
-                if status != 0:
-                    raise RuntimeError(
-                        f"Worker failed with error '{result}', please check the"
-                        " stack trace above for the root cause"
-                    )
-                responses.append(result)
+                self._record_rpc_metric(
+                    method_name, "host_total_s", time.perf_counter() - rpc_start
+                )
+                self._record_rpc_metric(method_name, "call_count", 1.0)
             return responses[0] if output_rank is not None else responses
 
         if non_block:
@@ -572,6 +643,15 @@ class DockerDistributedExecutor(Executor):
             future.wait_for_response(get_fut_response)
 
         return get_response()
+
+    def _record_rpc_metric(
+        self, method_name: str, metric_name: str, value: float
+    ) -> None:
+        if self._rpc_profiler is None:
+            return
+        self._rpc_profiler.record(
+            f"rpc.docker.host.{method_name}.{metric_name}", value
+        )
 
     def execute_model(self, scheduler_output, non_block: bool = False):
         """Execute model on all workers."""
@@ -666,9 +746,19 @@ class DockerDistributedExecutor(Executor):
         if getattr(self, "shutting_down", False):
             return
         self.shutting_down = True
-        self.shutdown_event.set()
 
         logger.info("Shutting down Docker executor...")
+
+        response_mqs = getattr(self, "response_mqs", [])
+        if self._rpc_profiler is not None and response_mqs and not self.is_failed:
+            try:
+                self.collective_rpc(flush_rpc_profile_worker, timeout=10)
+            except Exception as e:
+                logger.warning(
+                    "Failed to flush worker RPC profiles before shutdown: %s", e
+                )
+
+        self.shutdown_event.set()
 
         # `docker rm -f` sends SIGKILL and removes in one step.
         # Containers were started with --rm, so this is a belt-and-suspenders
@@ -695,4 +785,12 @@ class DockerDistributedExecutor(Executor):
         self.response_mqs = []
         self.container_handles = []
 
+        # Restore original VLLM_RPC_BASE_PATH
+        original = getattr(self, "_original_rpc_base_path", None)
+        if original is not None:
+            os.environ["VLLM_RPC_BASE_PATH"] = original
+        elif "VLLM_RPC_BASE_PATH" in os.environ:
+            del os.environ["VLLM_RPC_BASE_PATH"]
+
+        flush_rpc_profile()
         logger.info("Docker executor shutdown complete")

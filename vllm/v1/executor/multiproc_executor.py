@@ -47,6 +47,11 @@ from vllm.utils.network_utils import (
     get_loopback_ip,
     get_open_port,
 )
+from vllm.utils.rpc_profiling import (
+    flush_rpc_profile,
+    get_rpc_profiler,
+    set_rpc_profile_metadata,
+)
 from vllm.utils.system_utils import (
     _maybe_force_spawn,
     decorate_logs,
@@ -95,6 +100,7 @@ class MultiprocExecutor(Executor):
 
     def __init__(self, vllm_config: VllmConfig, monitor_workers: bool = True):
         self.monitor_workers = monitor_workers
+        self._rpc_profiler = get_rpc_profiler()
         super().__init__(vllm_config)
 
     def _init_executor(self) -> None:
@@ -117,6 +123,16 @@ class MultiprocExecutor(Executor):
         set_multiprocessing_worker_envs()
 
         # use the loopback address get_loopback_ip() for communication.
+        set_rpc_profile_metadata(
+            role="multiproc_host",
+            executor="multiproc",
+            process_kind="executor_host",
+            world_size=self.world_size,
+            tensor_parallel_size=tp_size,
+            pipeline_parallel_size=pp_size,
+            prefill_context_parallel_size=pcp_size,
+            node_rank_within_dp=self.parallel_config.node_rank_within_dp,
+        )
         distributed_init_method = get_distributed_init_method(
             get_loopback_ip(), get_open_port()
         )
@@ -133,7 +149,7 @@ class MultiprocExecutor(Executor):
                 self.local_world_size,
                 max_chunk_bytes=max_chunk_bytes,
                 connect_ip=self.parallel_config.master_addr,
-            )
+            ).set_profile_label("multiproc.host.rpc_broadcast")
             scheduler_output_handle = self.rpc_broadcast_mq.export_handle()
         # Create workers
         context = get_mp_context()
@@ -176,12 +192,18 @@ class MultiprocExecutor(Executor):
                     if rank < self.local_world_size:
                         local_message_queue = self.workers[rank].worker_response_mq
                         assert local_message_queue is not None
+                        local_message_queue.set_profile_label(
+                            f"multiproc.host.response.rank{rank}"
+                        )
                         self.response_mqs.append(local_message_queue)
                     else:
                         remote_message_queue = self.workers[0].peer_worker_response_mqs[
                             rank
                         ]
                         assert remote_message_queue is not None
+                        remote_message_queue.set_profile_label(
+                            f"multiproc.host.response.rank{rank}"
+                        )
                         self.response_mqs.append(remote_message_queue)
 
             # Ensure message queues are ready. Will deadlock if re-ordered
@@ -320,6 +342,8 @@ class MultiprocExecutor(Executor):
 
         deadline = None if timeout is None else time.monotonic() + timeout
         kwargs = kwargs or {}
+        rpc_start = time.perf_counter()
+        method_name = method if isinstance(method, str) else "callable"
 
         if kv_output_aggregator is not None:
             output_rank = None
@@ -334,7 +358,11 @@ class MultiprocExecutor(Executor):
             send_method = method
         else:
             send_method = cloudpickle.dumps(method, protocol=pickle.HIGHEST_PROTOCOL)
+        send_start = time.perf_counter()
         self.rpc_broadcast_mq.enqueue((send_method, args, kwargs, output_rank))
+        self._record_rpc_metric(
+            method_name, "host_send_s", time.perf_counter() - send_start
+        )
 
         response_mqs: Sequence[MessageQueue] = self.response_mqs
         if output_rank is not None:
@@ -343,23 +371,35 @@ class MultiprocExecutor(Executor):
         shutdown_event = self.shutdown_event
 
         def get_response():
+            response_wait_start = time.perf_counter()
             responses = []
-            for mq in response_mqs:
-                dequeue_timeout = (
-                    None if deadline is None else (deadline - time.monotonic())
+            try:
+                for mq in response_mqs:
+                    dequeue_timeout = (
+                        None if deadline is None else (deadline - time.monotonic())
+                    )
+                    try:
+                        status, result = mq.dequeue(
+                            timeout=dequeue_timeout, cancel=shutdown_event
+                        )
+                    except TimeoutError as e:
+                        raise TimeoutError(f"RPC call to {method} timed out.") from e
+                    if status != WorkerProc.ResponseStatus.SUCCESS:
+                        raise RuntimeError(
+                            f"Worker failed with error '{result}', please check the"
+                            " stack trace above for the root cause"
+                        )
+                    responses.append(result)
+            finally:
+                self._record_rpc_metric(
+                    method_name,
+                    "host_response_wait_s",
+                    time.perf_counter() - response_wait_start,
                 )
-                try:
-                    status, result = mq.dequeue(
-                        timeout=dequeue_timeout, cancel=shutdown_event
-                    )
-                except TimeoutError as e:
-                    raise TimeoutError(f"RPC call to {method} timed out.") from e
-                if status != WorkerProc.ResponseStatus.SUCCESS:
-                    raise RuntimeError(
-                        f"Worker failed with error '{result}', please check the"
-                        " stack trace above for the root cause"
-                    )
-                responses.append(result)
+                self._record_rpc_metric(
+                    method_name, "host_total_s", time.perf_counter() - rpc_start
+                )
+                self._record_rpc_metric(method_name, "call_count", 1.0)
             return responses[0] if output_rank is not None else responses
 
         if non_block:
@@ -373,6 +413,15 @@ class MultiprocExecutor(Executor):
             future.wait_for_response(get_fut_response)
 
         return aggregate(get_response())
+
+    def _record_rpc_metric(
+        self, method_name: str, metric_name: str, value: float
+    ) -> None:
+        if self._rpc_profiler is None:
+            return
+        self._rpc_profiler.record(
+            f"rpc.multiproc.host.{method_name}.{metric_name}", value
+        )
 
     @staticmethod
     def _ensure_worker_termination(worker_procs: list[BaseProcess]):
@@ -423,6 +472,7 @@ class MultiprocExecutor(Executor):
             self.shutdown_event.set()
 
         self.rpc_broadcast_mq = None
+        flush_rpc_profile()
 
     def check_health(self) -> None:
         self.collective_rpc("check_health", timeout=10)
@@ -503,10 +553,14 @@ class WorkerProc:
             # Initialize MessageQueue for receiving SchedulerOutput
             self.rpc_broadcast_mq = MessageQueue.create_from_handle(
                 input_shm_handle, self.worker.rank
+            ).set_profile_label(
+                f"multiproc.worker.rank{self.rank}.rpc_broadcast"
             )
 
             # Initializes a message queue for sending the model output
-            self.worker_response_mq = MessageQueue(1, 1)
+            self.worker_response_mq = MessageQueue(1, 1).set_profile_label(
+                f"multiproc.worker.rank{self.rank}.response"
+            )
             self.peer_response_handles = []
         else:
             # Initialize remote MessageQueue for receiving SchedulerOutput across nodes
@@ -527,6 +581,12 @@ class WorkerProc:
                     reader_rank_in_group=0
                 )
             )
+            self.rpc_broadcast_mq.set_profile_label(
+                f"multiproc.worker.rank{self.rank}.rpc_broadcast"
+            )
+            self.worker_response_mq.set_profile_label(
+                f"multiproc.worker.rank{self.rank}.response"
+            )
 
     @instrument(span_name="Worker init")
     def __init__(
@@ -540,6 +600,15 @@ class WorkerProc:
         is_driver_worker: bool,
     ):
         self.rank = rank
+        self._rpc_profiler = get_rpc_profiler()
+        set_rpc_profile_metadata(
+            role=f"multiproc_worker_rank{rank}",
+            executor="multiproc",
+            process_kind="worker",
+            rank=rank,
+            local_rank=local_rank,
+            is_driver_worker=is_driver_worker,
+        )
         wrapper = WorkerWrapperBase(rpc_rank=local_rank, global_rank=rank)
         # TODO: move `init_worker` to executor level as a collective rpc call
         all_kwargs: list[dict] = [
@@ -686,6 +755,7 @@ class WorkerProc:
         return cast(list[WorkerProcHandle], ready_proc_handles)
 
     def shutdown(self):
+        flush_rpc_profile()
         self.worker.shutdown()
         self.rpc_broadcast_mq = None
         self.worker_response_mq = None
@@ -811,36 +881,53 @@ class WorkerProc:
         SUCCESS = auto()
         FAILURE = auto()
 
-    def enqueue_output(self, output: Any):
+    def enqueue_output(self, output: Any, method_name: str):
         """Prepares output from the worker and enqueues it to the
         worker_response_mq. If the output is an Exception, it is
         converted to a FAILURE response.
         """
         if isinstance(output, AsyncModelRunnerOutput):
+            materialize_start = time.perf_counter()
             output = output.get_output()
+            self._record_worker_metric(
+                method_name,
+                "output_materialize_s",
+                time.perf_counter() - materialize_start,
+            )
 
         if isinstance(output, Exception):
             result = (WorkerProc.ResponseStatus.FAILURE, str(output))
         else:
             result = (WorkerProc.ResponseStatus.SUCCESS, output)
         if (response_mq := self.worker_response_mq) is not None:
+            enqueue_start = time.perf_counter()
             response_mq.enqueue(result)
+            self._record_worker_metric(
+                method_name,
+                "response_enqueue_s",
+                time.perf_counter() - enqueue_start,
+            )
 
-    def handle_output(self, output: Any):
+    def handle_output(self, output: Any, method_name: str):
         """Handles output from the worker. If async scheduling is enabled,
         it is passed to the async_output_busy_loop thread. Otherwise, it is
         enqueued directly to the worker_response_mq.
         """
         if self.use_async_scheduling:
-            self.async_output_queue.put(output)
+            self.async_output_queue.put((method_name, time.perf_counter(), output))
         else:
-            self.enqueue_output(output)
+            self.enqueue_output(output, method_name)
 
     def async_output_busy_loop(self):
         """Entrypoint for the thread which handles outputs asynchronously."""
         while True:
-            output = self.async_output_queue.get()
-            self.enqueue_output(output)
+            method_name, queued_at, output = self.async_output_queue.get()
+            self._record_worker_metric(
+                method_name,
+                "async_queue_wait_s",
+                time.perf_counter() - queued_at,
+            )
+            self.enqueue_output(output, method_name)
 
     def worker_busy_loop(self, cancel: threading.Event | None = None):
         """Main busy loop for Multiprocessing Workers"""
@@ -850,12 +937,25 @@ class WorkerProc:
                 cancel=cancel, indefinite=True
             )
             try:
+                method_name = method if isinstance(method, str) else "callable"
+                dispatch_start = time.perf_counter()
                 if isinstance(method, str):
                     func = getattr(self.worker, method)
                 elif isinstance(method, bytes):
                     func = partial(cloudpickle.loads(method), self.worker)
+                self._record_worker_metric(
+                    method_name,
+                    "dispatch_s",
+                    time.perf_counter() - dispatch_start,
+                )
 
+                execute_start = time.perf_counter()
                 output = func(*args, **kwargs)
+                self._record_worker_metric(
+                    method_name,
+                    "execute_s",
+                    time.perf_counter() - execute_start,
+                )
             except Exception as e:
                 # Notes have been introduced in python 3.11
                 if hasattr(e, "add_note"):
@@ -864,11 +964,23 @@ class WorkerProc:
                 # exception might not be serializable, so we convert it to
                 # string, only for logging purpose.
                 if output_rank is None or self.rank == output_rank:
-                    self.handle_output(e)
+                    self.handle_output(e, method_name)
+                self._record_worker_metric(method_name, "error_count", 1.0)
                 continue
 
             if output_rank is None or self.rank == output_rank:
-                self.handle_output(output)
+                self.handle_output(output, method_name)
+            self._record_worker_metric(method_name, "call_count", 1.0)
+
+    def _record_worker_metric(
+        self, method_name: str, metric_name: str, value: float
+    ) -> None:
+        if self._rpc_profiler is None:
+            return
+        self._rpc_profiler.record(
+            f"rpc.multiproc.worker.rank{self.rank}.{method_name}.{metric_name}",
+            value,
+        )
 
     @staticmethod
     def setup_proc_title_and_log_prefix(enable_ep: bool) -> None:

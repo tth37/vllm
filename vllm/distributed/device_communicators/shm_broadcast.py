@@ -29,6 +29,7 @@ import vllm.envs as envs
 from vllm.distributed.utils import StatelessProcessGroup, sched_yield
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
+from vllm.utils.rpc_profiling import get_rpc_profiler
 from vllm.utils.network_utils import (
     get_ip,
     get_open_port,
@@ -281,6 +282,8 @@ class MessageQueue:
         max_chunks: int = 10,
         connect_ip: str | None = None,
     ):
+        self._rpc_profiler = get_rpc_profiler()
+        self.profile_label: str | None = None
         if local_reader_ranks is None:
             local_reader_ranks = list(range(n_local_reader))
         else:
@@ -359,6 +362,8 @@ class MessageQueue:
     @staticmethod
     def create_from_handle(handle: Handle, rank) -> "MessageQueue":
         self = MessageQueue.__new__(MessageQueue)
+        self._rpc_profiler = get_rpc_profiler()
+        self.profile_label = None
         self.handle = handle
         self._is_writer = False
 
@@ -412,6 +417,15 @@ class MessageQueue:
             time.sleep(0.1)
 
         return self
+
+    def set_profile_label(self, label: str) -> "MessageQueue":
+        self.profile_label = label
+        return self
+
+    def _record_profile_metric(self, metric_name: str, value: float) -> None:
+        if self._rpc_profiler is None or self.profile_label is None:
+            return
+        self._rpc_profiler.record(f"mq.{self.profile_label}.{metric_name}", value)
 
     def wait_until_ready(self):
         """This is a collective operation. All processes (including the
@@ -582,6 +596,7 @@ class MessageQueue:
     def enqueue(self, obj, timeout: float | None = None):
         """Write to message queue with optional timeout (in seconds)"""
         assert self._is_writer, "Only writers can enqueue"
+        enqueue_start = time.perf_counter()
         all_buffers: list[SizedBuffer] = [b""]
         total_bytes = 6  # 2 bytes for oob buffer count, 4 for main buffer size
 
@@ -595,20 +610,39 @@ class MessageQueue:
             total_bytes += len(raw_buf) + 4
             return False
 
+        serialize_start = time.perf_counter()
         all_buffers[0] = pickle.dumps(
             obj, protocol=pickle.HIGHEST_PROTOCOL, buffer_callback=oob_callback
         )
+        serialize_end = time.perf_counter()
+        serialized_total_bytes = total_bytes + len(all_buffers[0])
+        self._record_profile_metric("enqueue.serialize_s", serialize_end - serialize_start)
+        self._record_profile_metric("enqueue.total_bytes", float(serialized_total_bytes))
+        self._record_profile_metric("enqueue.main_buffer_bytes", float(len(all_buffers[0])))
+        self._record_profile_metric("enqueue.oob_buffer_count", float(len(all_buffers) - 1))
         if self.n_local_reader > 0:
+            write_start = time.perf_counter()
             if total_bytes + len(all_buffers[0]) >= self.buffer.max_chunk_bytes:
                 with self.acquire_write(timeout) as buf:
+                    acquired_at = time.perf_counter()
                     buf[0] = 1  # overflow
+                write_end = time.perf_counter()
+                self._record_profile_metric("enqueue.local_acquire_s", acquired_at - write_start)
+                self._record_profile_metric("enqueue.local_write_s", write_end - acquired_at)
+                self._record_profile_metric("enqueue.local_overflow_count", 1.0)
+                local_send_start = time.perf_counter()
                 self.local_socket.send_multipart(all_buffers, copy=False)
+                self._record_profile_metric(
+                    "enqueue.local_overflow_send_s",
+                    time.perf_counter() - local_send_start,
+                )
             else:
                 # Byte 0: 0
                 # Bytes 1-2: Count of buffers
                 # Then each buffer follows, preceded by 4 bytes containing its length:
                 # [4 byte int L][L bytes of buffer content] ...
                 with self.acquire_write(timeout) as buf:
+                    acquired_at = time.perf_counter()
                     buf[0] = 0  # not overflow
                     offset = 3
                     buf[1:offset] = to_bytes_big(len(all_buffers), 2)  # oob buf count
@@ -618,9 +652,17 @@ class MessageQueue:
                         buf_offset = offset + 4
                         buf[offset:buf_offset] = to_bytes_big(buf_len, 4)
                         buf[buf_offset : (offset := buf_offset + buf_len)] = buffer
+                write_end = time.perf_counter()
+                self._record_profile_metric("enqueue.local_acquire_s", acquired_at - write_start)
+                self._record_profile_metric("enqueue.local_write_s", write_end - acquired_at)
 
         if self.n_remote_reader > 0:
+            remote_send_start = time.perf_counter()
             self.remote_socket.send_multipart(all_buffers, copy=False)
+            self._record_profile_metric(
+                "enqueue.remote_send_s", time.perf_counter() - remote_send_start
+            )
+        self._record_profile_metric("enqueue.total_s", time.perf_counter() - enqueue_start)
 
     def dequeue(
         self,
@@ -629,10 +671,14 @@ class MessageQueue:
         indefinite: bool = False,
     ):
         """Read from message queue with optional timeout (in seconds)"""
+        dequeue_start = time.perf_counter()
         if self._is_local_reader:
+            local_wait_start = time.perf_counter()
             with self.acquire_read(timeout, cancel, indefinite) as buf:
+                acquired_at = time.perf_counter()
                 overflow = buf[0] == 1
                 if not overflow:
+                    deserialize_start = time.perf_counter()
                     offset = 3
                     buf_count = from_bytes_big(buf[1:offset])
                     all_buffers = []
@@ -642,21 +688,80 @@ class MessageQueue:
                         offset = buf_offset + buf_len
                         all_buffers.append(buf[buf_offset:offset])
                     obj = pickle.loads(all_buffers[0], buffers=all_buffers[1:])
+                    self._record_profile_metric(
+                        "dequeue.local_deserialize_s",
+                        time.perf_counter() - deserialize_start,
+                    )
+            self._record_profile_metric(
+                "dequeue.local_wait_s", acquired_at - local_wait_start
+            )
             if overflow:
-                obj = MessageQueue.recv(self.local_socket, timeout)
+                self._record_profile_metric("dequeue.local_overflow_count", 1.0)
+                obj = MessageQueue.recv(
+                    self.local_socket,
+                    timeout,
+                    profiler=self._rpc_profiler,
+                    metric_prefix=(
+                        None
+                        if self.profile_label is None
+                        else f"mq.{self.profile_label}.dequeue.local_overflow_recv"
+                    ),
+                )
         elif self._is_remote_reader:
-            obj = MessageQueue.recv(self.remote_socket, timeout)
+            obj = MessageQueue.recv(
+                self.remote_socket,
+                timeout,
+                profiler=self._rpc_profiler,
+                metric_prefix=(
+                    None
+                    if self.profile_label is None
+                    else f"mq.{self.profile_label}.dequeue.remote_recv"
+                ),
+            )
         else:
             raise RuntimeError("Only readers can dequeue")
+        self._record_profile_metric("dequeue.total_s", time.perf_counter() - dequeue_start)
         return obj
 
     @staticmethod
-    def recv(socket: zmq.Socket, timeout: float | None) -> Any:
+    def recv(
+        socket: zmq.Socket,
+        timeout: float | None,
+        profiler=None,
+        metric_prefix: str | None = None,
+    ) -> Any:
+        recv_start = time.perf_counter()
         timeout_ms = None if timeout is None else int(timeout * 1000)
         if not socket.poll(timeout=timeout_ms):
             raise TimeoutError
+        poll_end = time.perf_counter()
         recv, *recv_oob = socket.recv_multipart(copy=False)
-        return pickle.loads(recv, buffers=recv_oob)
+        socket_recv_end = time.perf_counter()
+        obj = pickle.loads(recv, buffers=recv_oob)
+        end = time.perf_counter()
+        if profiler is not None and metric_prefix is not None:
+            profiler.record(f"{metric_prefix}.poll_wait_s", poll_end - recv_start)
+            profiler.record(
+                f"{metric_prefix}.socket_recv_s",
+                socket_recv_end - poll_end,
+            )
+            profiler.record(
+                f"{metric_prefix}.deserialize_s",
+                end - socket_recv_end,
+            )
+            profiler.record(
+                f"{metric_prefix}.total_s",
+                end - recv_start,
+            )
+            profiler.record(
+                f"{metric_prefix}.total_bytes",
+                float(sum(len(frame) for frame in (recv, *recv_oob))),
+            )
+            profiler.record(
+                f"{metric_prefix}.oob_buffer_count",
+                float(len(recv_oob)),
+            )
+        return obj
 
     def broadcast_object(self, obj=None):
         if self._is_writer:

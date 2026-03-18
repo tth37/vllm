@@ -11,8 +11,10 @@ import base64
 import json
 import os
 import pickle
+import queue
 import signal
 import threading
+import time
 import traceback
 from functools import partial
 
@@ -28,6 +30,11 @@ from vllm.distributed.device_communicators.shm_broadcast import (
     MessageQueue,
 )
 from vllm.logger import init_logger
+from vllm.utils.rpc_profiling import (
+    flush_rpc_profile,
+    get_rpc_profiler,
+    set_rpc_profile_metadata,
+)
 from vllm.v1.outputs import AsyncModelRunnerOutput
 from vllm.v1.worker.worker_base import WorkerWrapperBase
 
@@ -117,6 +124,28 @@ def init_distributed_for_worker(
     )
 
 
+def _make_mq_world_accessible(mq: MessageQueue) -> None:
+    """Chmod SHM segment and ZMQ IPC socket so the host user can access them.
+
+    Docker containers run as root, so SharedMemory segments (mode 0600) and
+    IPC sockets are owned by UID 0.  The host executor runs as a non-root
+    user and needs read/write access to both.
+    """
+    import stat
+
+    if mq.buffer is not None:
+        shm_path = f"/dev/shm/{mq.buffer.shared_memory.name}"
+        target_mode = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH
+        os.chmod(shm_path, target_mode)
+        logger.debug("chmod 0666 %s", shm_path)
+
+    handle = mq.export_handle()
+    if handle.local_subscribe_addr:
+        ipc_path = handle.local_subscribe_addr.removeprefix("ipc://")
+        os.chmod(ipc_path, 0o777)
+        logger.debug("chmod 0777 %s", ipc_path)
+
+
 def main():
     """Main entry point for Docker worker containers."""
     rank = int(get_env_var("VLLM_WORKER_RANK"))
@@ -127,6 +156,16 @@ def main():
     distributed_init_method = get_env_var("VLLM_DISTRIBUTED_INIT_METHOD")
     config_b64 = get_env_var("VLLM_CONFIG")
     is_driver_worker = get_env_var("VLLM_IS_DRIVER_WORKER", required=False) == "true"
+    rpc_profiler = get_rpc_profiler()
+    set_rpc_profile_metadata(
+        role=f"docker_worker_rank{rank}",
+        executor="docker",
+        process_kind="worker_container",
+        rank=rank,
+        local_rank=local_rank,
+        world_size=world_size,
+        is_driver_worker=is_driver_worker,
+    )
 
     logger.info(
         "Starting Docker worker: rank=%d, local_rank=%d, "
@@ -145,9 +184,18 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     worker_wrapper = None
+    async_output_queue: queue.Queue[tuple[str, float, object] | None] | None = None
+    async_output_copy_thread: threading.Thread | None = None
 
     try:
         vllm_config = deserialize_vllm_config(config_b64)
+        async_output_copy_enabled = (
+            vllm_config.scheduler_config.async_scheduling
+            and os.environ.get("VLLM_DOCKER_ASYNC_OUTPUT_COPY", "1") != "0"
+        )
+        set_rpc_profile_metadata(
+            async_output_copy_enabled=async_output_copy_enabled,
+        )
 
         init_distributed_for_worker(
             rank=rank,
@@ -159,18 +207,26 @@ def main():
         )
 
         scheduler_handle = deserialize_scheduler_handle(handle_b64)
-        rpc_broadcast_mq = MessageQueue.create_from_handle(scheduler_handle, rank)
+        rpc_broadcast_mq = MessageQueue.create_from_handle(
+            scheduler_handle, rank
+        ).set_profile_label(f"docker.worker.rank{rank}.rpc_broadcast")
         logger.info("Connected to RPC broadcast message queue")
 
-        # Each worker creates its own response MQ; the executor connects as reader
+        # Each worker creates its own response MQ; the executor connects as
+        # the single reader.  With --ipc host the host shares /dev/shm, so
+        # we use SHM (n_local_reader=1) for zero-copy message passing.
+        # Python's SharedMemory creates segments with mode 0600 (owner-only),
+        # and the container runs as root, so we chmod afterwards to let the
+        # host user access the segment and ZMQ IPC socket.
         worker_response_mq = MessageQueue(
             n_reader=1,
-            n_local_reader=0,
+            n_local_reader=1,
             max_chunk_bytes=24 * 1024 * 1024,
             max_chunks=10,
             connect_ip=master_addr,
-        )
-        logger.info("Worker %d created response MQ", rank)
+        ).set_profile_label(f"docker.worker.rank{rank}.response")
+        _make_mq_world_accessible(worker_response_mq)
+        logger.info("Worker %d created response MQ (SHM)", rank)
 
         # Initialize worker via WorkerWrapperBase (matches multiproc pattern)
         wrapper = WorkerWrapperBase(rpc_rank=local_rank, global_rank=rank)
@@ -202,10 +258,56 @@ def main():
         logger.info("Exported response handle to %s", handle_file)
 
         rpc_broadcast_mq.wait_until_ready()
-        # NOTE: We do NOT call wait_until_ready() on worker_response_mq here.
-        # Doing so would deadlock: this writer waits for the reader's
-        # subscription while the executor (reader) waits for our READY signal.
+        worker_response_mq.wait_until_ready()
         logger.info("Worker %d entering main loop", rank)
+
+        def enqueue_output(output: object, method_name: str) -> None:
+            if isinstance(output, AsyncModelRunnerOutput):
+                materialize_start = time.perf_counter()
+                output = output.get_output()
+                if rpc_profiler is not None:
+                    rpc_profiler.record(
+                        f"rpc.docker.worker.rank{rank}.{method_name}.output_materialize_s",
+                        time.perf_counter() - materialize_start,
+                    )
+
+            if isinstance(output, Exception):
+                result = (ResponseStatus.FAILURE, str(output))
+            else:
+                result = (ResponseStatus.SUCCESS, output)
+
+            enqueue_start = time.perf_counter()
+            worker_response_mq.enqueue(result)
+            if rpc_profiler is not None:
+                rpc_profiler.record(
+                    f"rpc.docker.worker.rank{rank}.{method_name}.response_enqueue_s",
+                    time.perf_counter() - enqueue_start,
+                )
+
+        use_async_scheduling = async_output_copy_enabled
+        if use_async_scheduling:
+            async_output_queue = queue.Queue()
+
+            def async_output_busy_loop() -> None:
+                assert async_output_queue is not None
+                while True:
+                    item = async_output_queue.get()
+                    if item is None:
+                        return
+                    method_name, queued_at, output = item
+                    if rpc_profiler is not None:
+                        rpc_profiler.record(
+                            f"rpc.docker.worker.rank{rank}.{method_name}.async_queue_wait_s",
+                            time.perf_counter() - queued_at,
+                        )
+                    enqueue_output(output, method_name)
+
+            async_output_copy_thread = threading.Thread(
+                target=async_output_busy_loop,
+                daemon=True,
+                name=f"DockerWorkerAsyncOutputCopy-{rank}",
+            )
+            async_output_copy_thread.start()
 
         while not shutdown_requested.is_set():
             try:
@@ -218,29 +320,60 @@ def main():
                 raise
 
             try:
+                method_name = method if isinstance(method, str) else "callable"
+                dispatch_start = time.perf_counter()
                 if isinstance(method, str):
                     func = getattr(worker_wrapper, method)
                 elif isinstance(method, bytes):
                     func = partial(cloudpickle.loads(method), worker_wrapper)
                 else:
                     raise TypeError(f"Unknown method type: {type(method)}")
+                if rpc_profiler is not None:
+                    rpc_profiler.record(
+                        f"rpc.docker.worker.rank{rank}.{method_name}.dispatch_s",
+                        time.perf_counter() - dispatch_start,
+                    )
 
+                execute_start = time.perf_counter()
                 output = func(*args, **kwargs)
-
-                if isinstance(output, AsyncModelRunnerOutput):
-                    output = output.get_output()
+                if rpc_profiler is not None:
+                    rpc_profiler.record(
+                        f"rpc.docker.worker.rank{rank}.{method_name}.execute_s",
+                        time.perf_counter() - execute_start,
+                    )
 
                 if output_rank is None or rank == output_rank:
-                    worker_response_mq.enqueue((ResponseStatus.SUCCESS, output))
+                    if use_async_scheduling:
+                        assert async_output_queue is not None
+                        async_output_queue.put(
+                            (method_name, time.perf_counter(), output)
+                        )
+                    else:
+                        enqueue_output(output, method_name)
+
+                if rpc_profiler is not None:
+                    rpc_profiler.record(
+                        f"rpc.docker.worker.rank{rank}.{method_name}.call_count",
+                        1.0,
+                    )
 
             except Exception as e:
                 logger.exception("Worker %d encountered an error", rank)
                 if hasattr(e, "add_note"):
                     e.add_note(traceback.format_exc())
-                error_msg = f"{e}\n{traceback.format_exc()}"
+                error_msg = RuntimeError(f"{e}\n{traceback.format_exc()}")
                 if output_rank is None or rank == output_rank:
-                    worker_response_mq.enqueue(
-                        (ResponseStatus.FAILURE, error_msg)
+                    if use_async_scheduling:
+                        assert async_output_queue is not None
+                        async_output_queue.put(
+                            (method_name, time.perf_counter(), error_msg)
+                        )
+                    else:
+                        enqueue_output(error_msg, method_name)
+                if rpc_profiler is not None:
+                    rpc_profiler.record(
+                        f"rpc.docker.worker.rank{rank}.{method_name}.error_count",
+                        1.0,
                     )
 
     except SystemExit:
@@ -253,6 +386,11 @@ def main():
 
     finally:
         logger.info("Worker %d shutting down", rank)
+        if async_output_queue is not None:
+            async_output_queue.put(None)
+        if async_output_copy_thread is not None:
+            async_output_copy_thread.join(timeout=5)
+        flush_rpc_profile()
         if worker_wrapper is not None:
             worker_wrapper.shutdown()
         destroy_model_parallel()
