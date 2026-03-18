@@ -1,6 +1,5 @@
 #!/bin/bash
-# Clean optimized runner for exp1.
-# Runs host vLLM with DockerDistributedExecutor, full SHM RPC, and async output copy.
+# DockerBE ablation: keep async output copy, but disable SHM for worker responses.
 
 set -euo pipefail
 
@@ -8,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./exp1_common.sh
 source "$SCRIPT_DIR/exp1_common.sh"
 
-RESULTS_DIR="${RESULTS_DIR:-$SCRIPT_DIR/dockerbe_full_shm}"
+RESULTS_DIR="${RESULTS_DIR:-$SCRIPT_DIR/dockerbe_hybrid_shm}"
 
 run_config() {
     local config_id="$1"
@@ -19,7 +18,7 @@ run_config() {
 
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    log "Optimized config $config_id: Host + DockerBE + TP=$tp_size"
+    log "Ablation config $config_id: Host + DockerBE + SHM broadcast + TCP response + TP=$tp_size"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     cleanup_runtime
@@ -27,8 +26,10 @@ run_config() {
 
     CUDA_VISIBLE_DEVICES="$GPU_DEVICES" \
         PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
-        VLLM_DOCKER_IMAGE="$DOCKERBE_IMAGE" \
+        VLLM_DOCKER_IMAGE="$DOCKERBE_HYBRID_SHM_IMAGE" \
         VLLM_DOCKER_ASYNC_OUTPUT_COPY=1 \
+        VLLM_DOCKER_BROADCAST_MQ_SHM=1 \
+        VLLM_DOCKER_RESPONSE_MQ_SHM=0 \
         "$VLLM_CMD" serve "$MODEL" \
             --distributed-executor-backend docker \
             --tensor-parallel-size "$tp_size" \
@@ -39,9 +40,9 @@ run_config() {
         > "$server_log" 2>&1 &
     SERVER_PID=$!
 
-    log "Waiting for DockerBE server to be ready (timeout ${SERVER_STARTUP_TIMEOUT}s)..."
+    log "Waiting for hybrid-SHM DockerBE server to be ready (timeout ${SERVER_STARTUP_TIMEOUT}s)..."
     if ! wait_for_server "$SERVER_STARTUP_TIMEOUT"; then
-        err "DockerBE server did not start within ${SERVER_STARTUP_TIMEOUT}s"
+        err "Hybrid-SHM DockerBE server did not start within ${SERVER_STARTUP_TIMEOUT}s"
         tail -60 "$server_log" 2>/dev/null || true
         return 1
     fi
@@ -57,19 +58,19 @@ main() {
     verify_experiment_prereqs
     enforce_gpu_policy
     check_selected_gpus_idle
-    require_docker_image "$DOCKERBE_IMAGE"
+    require_docker_image "$DOCKERBE_HYBRID_SHM_IMAGE"
     prepare_results_dir "$RESULTS_DIR"
 
     run_config 5 1
     run_config 6 2
 
-    EXPERIMENT_BRANCH_NAME="$DOCKERBE_FULL_SHM_BRANCH_NAME" \
-    EXPERIMENT_IMAGE_TAG="$DOCKERBE_IMAGE" \
-    EXPERIMENT_OPTIMIZATIONS="DockerDistributedExecutor on the host, SHM broadcast MQ, SHM worker response MQ, and VLLM_DOCKER_ASYNC_OUTPUT_COPY=1." \
+    EXPERIMENT_BRANCH_NAME="$DOCKERBE_HYBRID_SHM_BRANCH_NAME" \
+    EXPERIMENT_IMAGE_TAG="$DOCKERBE_HYBRID_SHM_IMAGE" \
+    EXPERIMENT_OPTIMIZATIONS="DockerDistributedExecutor on the host, SHM broadcast MQ, TCP worker response MQ, and VLLM_DOCKER_ASYNC_OUTPUT_COPY=1." \
     generate_results_report \
         "$RESULTS_DIR" \
-        "Experiment 1 DockerBE Full SHM Report" \
-        "Host vLLM runs from the local source tree with DockerDistributedExecutor, full SHM RPC, and VLLM_DOCKER_ASYNC_OUTPUT_COPY=1."
+        "Experiment 1 DockerBE Hybrid-SHM Ablation Report" \
+        "Host vLLM runs from the local source tree with DockerDistributedExecutor, SHM broadcast MQ, TCP worker response MQ, and VLLM_DOCKER_ASYNC_OUTPUT_COPY=1."
 }
 
 main "$@"

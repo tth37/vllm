@@ -193,8 +193,12 @@ def main():
             vllm_config.scheduler_config.async_scheduling
             and os.environ.get("VLLM_DOCKER_ASYNC_OUTPUT_COPY", "1") != "0"
         )
+        response_mq_shm_enabled = (
+            os.environ.get("VLLM_DOCKER_RESPONSE_MQ_SHM", "1") != "0"
+        )
         set_rpc_profile_metadata(
             async_output_copy_enabled=async_output_copy_enabled,
+            response_mq_shm_enabled=response_mq_shm_enabled,
         )
 
         init_distributed_for_worker(
@@ -213,20 +217,26 @@ def main():
         logger.info("Connected to RPC broadcast message queue")
 
         # Each worker creates its own response MQ; the executor connects as
-        # the single reader.  With --ipc host the host shares /dev/shm, so
-        # we use SHM (n_local_reader=1) for zero-copy message passing.
+        # the single reader. With --ipc host the host shares /dev/shm, so we
+        # can use SHM (n_local_reader=1) for zero-copy message passing when
+        # enabled, or TCP (n_local_reader=0) as an ablation.
         # Python's SharedMemory creates segments with mode 0600 (owner-only),
         # and the container runs as root, so we chmod afterwards to let the
         # host user access the segment and ZMQ IPC socket.
         worker_response_mq = MessageQueue(
             n_reader=1,
-            n_local_reader=1,
+            n_local_reader=1 if response_mq_shm_enabled else 0,
             max_chunk_bytes=24 * 1024 * 1024,
             max_chunks=10,
             connect_ip=master_addr,
         ).set_profile_label(f"docker.worker.rank{rank}.response")
-        _make_mq_world_accessible(worker_response_mq)
-        logger.info("Worker %d created response MQ (SHM)", rank)
+        if response_mq_shm_enabled:
+            _make_mq_world_accessible(worker_response_mq)
+        logger.info(
+            "Worker %d created response MQ (%s)",
+            rank,
+            "SHM" if response_mq_shm_enabled else "TCP",
+        )
 
         # Initialize worker via WorkerWrapperBase (matches multiproc pattern)
         wrapper = WorkerWrapperBase(rpc_rank=local_rank, global_rank=rank)

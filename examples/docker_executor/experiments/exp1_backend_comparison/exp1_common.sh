@@ -18,7 +18,13 @@ GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.5}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-512}"
 SHAREGPT_PATH="${SHAREGPT_PATH:-$REPO_ROOT/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json}"
 BASELINE_IMAGE="${BASELINE_IMAGE:-vllm/vllm-docker-executor:exp1-baseline}"
+DOCKERBE_SYNC_OUTPUT_IMAGE="${DOCKERBE_SYNC_OUTPUT_IMAGE:-vllm/vllm-docker-executor:exp1-dockerbe_sync_output}"
+DOCKERBE_HYBRID_SHM_IMAGE="${DOCKERBE_HYBRID_SHM_IMAGE:-vllm/vllm-docker-executor:exp1-dockerbe_hybrid_shm}"
 DOCKERBE_IMAGE="${DOCKERBE_IMAGE:-vllm/vllm-docker-executor:exp1-dockerbe_full_shm}"
+BASELINE_BRANCH_NAME="${BASELINE_BRANCH_NAME:-exp1/baseline}"
+DOCKERBE_SYNC_OUTPUT_BRANCH_NAME="${DOCKERBE_SYNC_OUTPUT_BRANCH_NAME:-exp1/dockerbe_sync_output}"
+DOCKERBE_HYBRID_SHM_BRANCH_NAME="${DOCKERBE_HYBRID_SHM_BRANCH_NAME:-exp1/dockerbe_hybrid_shm}"
+DOCKERBE_FULL_SHM_BRANCH_NAME="${DOCKERBE_FULL_SHM_BRANCH_NAME:-exp1/dockerbe_full_shm}"
 MODEL_CACHE_HINT="/home/thd/.cache/huggingface/hub/models--Qwen--Qwen3-8B"
 
 SERVER_PID=""
@@ -229,6 +235,9 @@ generate_results_report() {
     local run_note="$3"
     local report="$results_dir/report.txt"
     local bench_file=""
+    local variant_branch="${EXPERIMENT_BRANCH_NAME:-}"
+    local variant_image="${EXPERIMENT_IMAGE_TAG:-}"
+    local optimization_set="${EXPERIMENT_OPTIMIZATIONS:-}"
 
     {
         echo "================================================================"
@@ -240,10 +249,21 @@ generate_results_report() {
         echo "  GPUs: CUDA_VISIBLE_DEVICES=$GPU_DEVICES"
         echo "  Dataset: ShareGPT first $NUM_PROMPTS prompts ($SHAREGPT_PATH)"
         echo "  Benchmark: rate=$REQUEST_RATE req/s, $NUM_WARMUPS warmups, --ignore-eos"
+        if [[ -n "$variant_branch" ]]; then
+            echo "  Experiment branch: $variant_branch"
+        fi
+        if [[ -n "$variant_image" ]]; then
+            echo "  Docker image: $variant_image"
+        fi
         echo "================================================================"
         echo ""
         echo "Run note:"
         echo "  $run_note"
+        if [[ -n "$optimization_set" ]]; then
+            echo ""
+            echo "Optimization set:"
+            echo "  $optimization_set"
+        fi
         echo ""
         for bench_file in "$results_dir"/*_bench.txt; do
             [[ -f "$bench_file" ]] || continue

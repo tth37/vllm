@@ -190,6 +190,12 @@ class DockerDistributedExecutor(Executor):
             async_output_copy_env=os.environ.get(
                 "VLLM_DOCKER_ASYNC_OUTPUT_COPY", "1"
             ),
+            broadcast_mq_shm_env=os.environ.get(
+                "VLLM_DOCKER_BROADCAST_MQ_SHM", "1"
+            ),
+            response_mq_shm_env=os.environ.get(
+                "VLLM_DOCKER_RESPONSE_MQ_SHM", "1"
+            ),
             world_size=self.world_size,
             tensor_parallel_size=tp_size,
             pipeline_parallel_size=pp_size,
@@ -205,13 +211,16 @@ class DockerDistributedExecutor(Executor):
         self._original_rpc_base_path = os.environ.get("VLLM_RPC_BASE_PATH")
         os.environ["VLLM_RPC_BASE_PATH"] = shared_volume
 
-        # Use shared-memory MessageQueue: with --ipc host and --pid host,
-        # containers share the host's /dev/shm, so SHM ring buffers are
-        # directly accessible across the host and all containers.
+        broadcast_mq_shm_enabled = (
+            os.environ.get("VLLM_DOCKER_BROADCAST_MQ_SHM", "1") != "0"
+        )
+        # With --ipc host and --pid host, containers share the host's
+        # /dev/shm, so SHM ring buffers are directly accessible across the
+        # host and all containers when enabled.
         max_chunk_bytes = envs.VLLM_MQ_MAX_CHUNK_BYTES_MB * 1024 * 1024
         self.rpc_broadcast_mq = MessageQueue(
             n_reader=self.world_size,
-            n_local_reader=self.world_size,
+            n_local_reader=self.world_size if broadcast_mq_shm_enabled else 0,
             max_chunk_bytes=max_chunk_bytes,
             max_chunks=10,
             connect_ip=self.host_ip,
@@ -251,9 +260,15 @@ class DockerDistributedExecutor(Executor):
                 logger.info(f"Worker {rank} handle collected")
 
             # Wait for message queues to be ready
-            logger.info("Waiting for RPC broadcast MQ to be ready...")
+            logger.info(
+                "Waiting for RPC broadcast MQ to be ready (%s)...",
+                "SHM" if broadcast_mq_shm_enabled else "TCP",
+            )
             self.rpc_broadcast_mq.wait_until_ready()
-            logger.info("RPC broadcast MQ is ready")
+            logger.info(
+                "RPC broadcast MQ is ready (%s)",
+                "SHM" if broadcast_mq_shm_enabled else "TCP",
+            )
 
             # Collect response message queues from all workers
             self.response_mqs: Sequence[MessageQueue] = [
@@ -261,13 +276,25 @@ class DockerDistributedExecutor(Executor):
                 if handle.worker_response_mq is not None
             ]
 
-            # Response MQs use SHM (workers chmod the segment + IPC socket
-            # to world-accessible after creation).  Sync after broadcast MQ
-            # is ready so both sides call wait_until_ready() in the same order.
+            response_mq_shm_enabled = (
+                os.environ.get("VLLM_DOCKER_RESPONSE_MQ_SHM", "1") != "0"
+            )
+            # Response MQs can use SHM or TCP. When SHM is enabled, workers
+            # chmod the segment + IPC socket to world-accessible so the host
+            # user can connect. Sync after the broadcast MQ is ready so both
+            # sides call wait_until_ready() in the same order.
             for i, mq in enumerate(self.response_mqs):
                 mq.wait_until_ready()
-                logger.debug("Response MQ %d ready (SHM)", i)
-            logger.info("All %d response MQs ready (SHM)", len(self.response_mqs))
+                logger.debug(
+                    "Response MQ %d ready (%s)",
+                    i,
+                    "SHM" if response_mq_shm_enabled else "TCP",
+                )
+            logger.info(
+                "All %d response MQs ready (%s)",
+                len(self.response_mqs),
+                "SHM" if response_mq_shm_enabled else "TCP",
+            )
 
             self.futures_queue = deque[tuple[Future, Any]]()
 
@@ -380,6 +407,14 @@ class DockerDistributedExecutor(Executor):
         ):
             cmd.extend(
                 ["-e", f"VLLM_DOCKER_ASYNC_OUTPUT_COPY={docker_async_output_copy}"]
+            )
+        if docker_broadcast_mq_shm := os.environ.get("VLLM_DOCKER_BROADCAST_MQ_SHM"):
+            cmd.extend(
+                ["-e", f"VLLM_DOCKER_BROADCAST_MQ_SHM={docker_broadcast_mq_shm}"]
+            )
+        if docker_response_mq_shm := os.environ.get("VLLM_DOCKER_RESPONSE_MQ_SHM"):
+            cmd.extend(
+                ["-e", f"VLLM_DOCKER_RESPONSE_MQ_SHM={docker_response_mq_shm}"]
             )
         if omp_num_threads := os.environ.get("OMP_NUM_THREADS"):
             cmd.extend(["-e", f"OMP_NUM_THREADS={omp_num_threads}"])

@@ -28,7 +28,7 @@ run_config() {
 
     docker run -d --rm \
         --name "$CONTAINER_NAME" \
-        --gpus "device=$GPU_DEVICES" \
+        --gpus "\"device=$GPU_DEVICES\"" \
         --network host \
         --ipc host \
         -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
@@ -69,6 +69,9 @@ main() {
     run_config 3 1
     run_config 4 2
 
+    EXPERIMENT_BRANCH_NAME="$BASELINE_BRANCH_NAME" \
+    EXPERIMENT_IMAGE_TAG="$BASELINE_IMAGE" \
+    EXPERIMENT_OPTIMIZATIONS="Runs inside Docker, uses MultiprocExecutor, and does not use DockerDistributedExecutor RPC." \
     generate_results_report \
         "$RESULTS_DIR" \
         "Experiment 1 Baseline Report" \

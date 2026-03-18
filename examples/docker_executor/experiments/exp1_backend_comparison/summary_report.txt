@@ -1,0 +1,21 @@
+================================================================
+  Experiment 1 Active Comparison Summary
+  Generated: 2026-03-18 10:35:01 UTC
+  Git branch: main
+  Git commit: 0218fcee9
+  Model: Qwen/Qwen3-8B
+  GPUs: CUDA_VISIBLE_DEVICES=1,2
+  Dataset: ShareGPT first 500 prompts (/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json)
+================================================================
+
+TP=1 comparison
+  Baseline Docker+MP:       median TPOT 15.36 ms, output tok/s 1022.47
+  DockerBE sync output:     median TPOT 16.03 ms, output tok/s 1018.19
+  DockerBE hybrid SHM:      median TPOT 15.33 ms, output tok/s 1021.73
+  DockerBE full SHM:        median TPOT 15.34 ms, output tok/s 1017.94
+
+TP=2 comparison
+  Baseline Docker+MP:       median TPOT 10.15 ms, output tok/s 1060.99
+  DockerBE sync output:     median TPOT 10.81 ms, output tok/s 1055.47
+  DockerBE hybrid SHM:      median TPOT 10.14 ms, output tok/s 1059.68
+  DockerBE full SHM:        median TPOT 10.13 ms, output tok/s 1059.71
