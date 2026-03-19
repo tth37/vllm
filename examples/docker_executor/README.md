@@ -105,6 +105,13 @@ Builds the Docker image with the custom executor files.
 
 This creates `vllm/vllm-docker-executor:latest`.
 
+Published exp1 benchmark images are also available on Docker Hub:
+
+- `tth37/vllm-docker-executor:exp1-baseline`
+- `tth37/vllm-docker-executor:exp1-dockerbe_sync_output`
+- `tth37/vllm-docker-executor:exp1-dockerbe_hybrid_shm`
+- `tth37/vllm-docker-executor:exp1-dockerbe_full_shm`
+
 ### 2. Run the Test
 
 ```bash
@@ -149,8 +156,12 @@ vllm serve facebook/opt-125m \
 Use the official `vllm bench serve` command:
 
 ```bash
-# Download a dataset first
-wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
+# Check that the ShareGPT dataset exists first
+DATASET_PATH=./ShareGPT_V3_unfiltered_cleaned_split.json
+if [[ ! -f "$DATASET_PATH" ]]; then
+  wget -O "$DATASET_PATH" \
+    https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
+fi
 
 # Run benchmark
 vllm bench serve \
@@ -158,9 +169,11 @@ vllm bench serve \
   --model facebook/opt-125m \
   --endpoint /v1/completions \
   --dataset-name sharegpt \
-  --dataset-path ./ShareGPT_V3_unfiltered_cleaned_split.json \
+  --dataset-path "$DATASET_PATH" \
   --num-prompts 50
 ```
+
+The `exp1_backend_comparison` scripts use the same dataset file and fail fast if it is missing.
 
 ### Benchmark Options
 

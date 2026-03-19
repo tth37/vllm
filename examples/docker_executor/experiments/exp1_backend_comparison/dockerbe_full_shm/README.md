@@ -9,6 +9,7 @@ This directory is reserved for the cleaned exp1 optimized rerun.
 - Optimizations adopted: DockerDistributedExecutor, SHM broadcast, SHM response, async output copy
 - Git branch: `exp1/dockerbe_full_shm`
 - Docker image tag: `vllm/vllm-docker-executor:exp1-dockerbe_full_shm`
+- Published Docker Hub tag: `tth37/vllm-docker-executor:exp1-dockerbe_full_shm`
 - Run script: [run_dockerbe_full_shm.sh](/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/run_dockerbe_full_shm.sh)
 - GPUs: `1,2`
 - Model: `Qwen/Qwen3-8B`

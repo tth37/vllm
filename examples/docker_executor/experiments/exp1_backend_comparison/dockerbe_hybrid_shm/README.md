@@ -10,6 +10,7 @@ This directory holds the DockerBE ablation that keeps async output copy but disa
 - Optimization removed: SHM worker response MQ
 - Git branch: `exp1/dockerbe_hybrid_shm`
 - Docker image tag: `vllm/vllm-docker-executor:exp1-dockerbe_hybrid_shm`
+- Published Docker Hub tag: `tth37/vllm-docker-executor:exp1-dockerbe_hybrid_shm`
 - Run script: [run_dockerbe_hybrid_shm.sh](/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/run_dockerbe_hybrid_shm.sh)
 - GPUs: `1,2`
 - Model: `Qwen/Qwen3-8B`

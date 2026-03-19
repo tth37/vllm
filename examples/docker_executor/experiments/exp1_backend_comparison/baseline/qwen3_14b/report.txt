@@ -1,0 +1,55 @@
+================================================================
+  Experiment 1 Baseline Report
+  Generated: 2026-03-19 02:02:01 UTC
+  Git branch: main
+  Git commit: 2bad5bb1a
+  Model: Qwen/Qwen3-14B
+  GPUs: CUDA_VISIBLE_DEVICES=1,2
+  Dataset: ShareGPT first 1000 prompts (/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json)
+  Benchmark: rate=10 req/s, 3 warmups, --ignore-eos
+  Experiment branch: exp1/baseline
+  Docker image: vllm/vllm-docker-executor:exp1-baseline
+================================================================
+
+Run note:
+  vLLM serve runs inside Docker with --distributed-executor-backend mp and the container sees GPUs 1,2.
+
+Optimization set:
+  Runs inside Docker, uses MultiprocExecutor, and does not use DockerDistributedExecutor RPC.
+
+── 3_docker_mp_tp1 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     700       
+Failed requests:                         300       
+Benchmark duration (s):                  110.68    
+Request throughput (req/s):              6.32      
+Output token throughput (tok/s):         990.10    
+Peak concurrent requests:                70.00     
+Mean TTFT (ms):                          377.31    
+Median TTFT (ms):                        95.87     
+P99 TTFT (ms):                           5960.95   
+Mean TPOT (ms):                          34.03     
+Median TPOT (ms):                        32.02     
+P99 TPOT (ms):                           96.54     
+Mean ITL (ms):                           32.33     
+Median ITL (ms):                         29.21     
+P99 ITL (ms):                            84.39     
+
+── 4_docker_mp_tp2 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     700       
+Failed requests:                         300       
+Benchmark duration (s):                  106.02    
+Request throughput (req/s):              6.60      
+Output token throughput (tok/s):         1033.64   
+Peak concurrent requests:                70.00     
+Mean TTFT (ms):                          340.42    
+Median TTFT (ms):                        59.21     
+P99 TTFT (ms):                           5933.74   
+Mean TPOT (ms):                          19.81     
+Median TPOT (ms):                        17.76     
+P99 TPOT (ms):                           83.91     
+Mean ITL (ms):                           18.55     
+Median ITL (ms):                         16.41     
+P99 ITL (ms):                            58.22     
+

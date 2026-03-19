@@ -7,6 +7,7 @@ This directory is reserved for the cleaned exp1 baseline rerun.
 - Optimizations adopted: containerized server placement only; no DockerBE RPC path
 - Git branch: `exp1/baseline`
 - Docker image tag: `vllm/vllm-docker-executor:exp1-baseline`
+- Published Docker Hub tag: `tth37/vllm-docker-executor:exp1-baseline`
 - Run script: [run_baseline_docker_mp.sh](/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/run_baseline_docker_mp.sh)
 - GPUs: `1,2`
 - Model: `Qwen/Qwen3-8B`

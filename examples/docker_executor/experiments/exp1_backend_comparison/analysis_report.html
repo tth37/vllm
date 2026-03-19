@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Exp1 Multi-Model Sweep Report</title>
+  <style>
+    :root {
+      --bg: #f4efe6;
+      --card: #fffdf8;
+      --ink: #1f2933;
+      --muted: #5f6c76;
+      --line: #d9d1c3;
+      --accent: #8e5d2d;
+    }
+    body {
+      margin: 0;
+      font-family: "Georgia", "Iowan Old Style", serif;
+      background: linear-gradient(180deg, #efe7d8 0%, #f9f6ef 100%);
+      color: var(--ink);
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 24px 48px;
+    }
+    h1, h2, h3 {
+      margin: 0 0 10px;
+      line-height: 1.15;
+    }
+    p {
+      margin: 0 0 14px;
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    .hero {
+      background: radial-gradient(circle at top left, #fff7dc 0%, #fffdf8 55%, #f7efe2 100%);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: 0 10px 30px rgba(58, 44, 28, 0.08);
+      margin-bottom: 22px;
+    }
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 20px;
+      margin-bottom: 18px;
+      box-shadow: 0 8px 24px rgba(58, 44, 28, 0.05);
+    }
+    .callouts {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+    .callout {
+      background: #fff9ef;
+      border: 1px solid #ead7b5;
+      border-radius: 14px;
+      padding: 14px 16px;
+    }
+    .callout strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--accent);
+    }
+    .variant-grid, .glossary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+    .variant-card, .glossary-item {
+      background: #fffaf1;
+      border: 1px solid #eadfce;
+      border-radius: 14px;
+      padding: 14px 16px;
+    }
+    .variant-card h3, .glossary-item strong {
+      color: var(--accent);
+    }
+    .variant-card ul {
+      margin: 10px 0 0;
+      padding-left: 18px;
+      color: var(--ink);
+    }
+    .variant-card li {
+      margin: 0 0 8px;
+      line-height: 1.45;
+    }
+    .glossary-item p {
+      margin: 8px 0 0;
+    }
+    .figure {
+      margin: 18px 0 8px;
+      text-align: center;
+    }
+    .figure img {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      font-size: 13px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    code {
+      font-family: "SFMono-Regular", Consolas, monospace;
+      background: #f3eee5;
+      border-radius: 6px;
+      padding: 2px 6px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Experiment 1: Multi-Model Sweep Report</h1>
+      <p>This report summarizes the 3-model, 4-variant rerun of the Docker executor experiment using the first 1000 ShareGPT prompts on GPUs <code>1,2</code>.</p>
+      <p>The core pattern is stable across model sizes: disabling async output copy is the only optimization that causes a consistent regression, while the hybrid-SHM and full-SHM paths both stay essentially at baseline.</p>
+      <div class="meta">
+        <div><strong>Generated</strong><br>2026-03-19 03:05:31 UTC</div>
+        <div><strong>Git commit</strong><br>2bad5bb1a</div>
+        <div><strong>Dataset</strong><br>ShareGPT first 1000 prompts</div>
+        <div><strong>Models</strong><br>Qwen3-4B, Qwen3-8B, Qwen3-14B</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Key Findings</h2>
+      <div class="callouts">
+        <div class="callout">
+          <strong>Async output copy is the critical optimization</strong>
+          <span>Compared with baseline, the sync-output ablation adds an average of <code>+0.72 ms</code> TPOT at TP=1 and <code>+0.76 ms</code> at TP=2.</span>
+        </div>
+        <div class="callout">
+          <strong>Response-side SHM barely moves the needle</strong>
+          <span>The maximum median-TPOT gap between hybrid-SHM and full-SHM is only <code>0.02 ms</code> at TP=1 and <code>0.01 ms</code> at TP=2.</span>
+        </div>
+        <div class="callout">
+          <strong>Full SHM reaches baseline parity</strong>
+          <span>Relative to baseline, the full-SHM path averages <code>+0.04 ms</code> TPOT delta at TP=1 and <code>+0.04 ms</code> at TP=2.</span>
+        </div>
+        <div class="callout">
+          <strong>Request validity is stable enough for fair comparison</strong>
+          <span>Most runs landed at <code>700/300</code> successful/failed requests; one 14B hybrid TP=2 run landed at <code>699/301</code>, which is still very close.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Settings And Ablations</h2>
+      <p>The four variants are intentionally close to each other so the effect of each optimization is easy to isolate. The baseline is the reference implementation, and the three DockerBE rows add or remove one optimization at a time.</p>
+      <div class="variant-grid">
+        <div class="variant-card"><h3>Baseline Docker+MP</h3><p>vLLM runs fully inside one Docker container and uses the standard multiprocess executor (<code>mp</code>). This is the control setup: no DockerDistributedExecutor RPC path is involved.</p><ul><li>Server placement: inside Docker</li><li>Executor: MultiprocExecutor (<code>--distributed-executor-backend mp</code>)</li><li>What it measures: the reference latency/throughput we want DockerBE to match</li></ul></div>
+<div class="variant-card"><h3>DockerBE Sync Output</h3><p>This keeps the Docker executor and SHM transport enabled, but removes the async output-copy optimization. It is the direct ablation for the root cause we found earlier.</p><ul><li>Server placement: host process using <code>DockerDistributedExecutor</code></li><li>Broadcast path: SHM</li><li>Worker response path: SHM</li><li>Output handling: synchronous (<code>VLLM_DOCKER_ASYNC_OUTPUT_COPY=0</code>)</li><li>What it ablates: async output copy</li></ul></div>
+<div class="variant-card"><h3>DockerBE Hybrid SHM</h3><p>This keeps async output copy enabled, but switches worker responses back to TCP while leaving the host-to-worker broadcast on SHM.</p><ul><li>Server placement: host process using <code>DockerDistributedExecutor</code></li><li>Broadcast path: SHM</li><li>Worker response path: TCP</li><li>Output handling: asynchronous (<code>VLLM_DOCKER_ASYNC_OUTPUT_COPY=1</code>)</li><li>What it ablates: response-side SHM only</li></ul></div>
+<div class="variant-card"><h3>DockerBE Full SHM</h3><p>This is the optimized target. It keeps the Docker executor, async output copy, SHM broadcast, and SHM worker responses all enabled at once.</p><ul><li>Server placement: host process using <code>DockerDistributedExecutor</code></li><li>Broadcast path: SHM</li><li>Worker response path: SHM</li><li>Output handling: asynchronous (<code>VLLM_DOCKER_ASYNC_OUTPUT_COPY=1</code>)</li><li>What it represents: the final optimized DockerBE path</li></ul></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Glossary</h2>
+      <p>This experiment mixes executor choices, transport choices, and output-handling choices. The short definitions below explain the terms used in the tables and plots.</p>
+      <div class="glossary-grid">
+        <div class="glossary-item"><strong>Async output copy</strong><p>The worker copies generation outputs onto a separate path so the main execution path does not block on handing results back to the host. In this experiment, removing it causes the clear latency regression.</p></div>
+<div class="glossary-item"><strong>Sync output</strong><p>The worker returns outputs on the same critical path without the async handoff. That makes response delivery wait longer and shows up as higher TPOT.</p></div>
+<div class="glossary-item"><strong>SHM broadcast MQ</strong><p>The host-to-worker RPC broadcast MessageQueue uses shared memory instead of a TCP or socket transport. This reduces messaging overhead for control traffic sent from the host to all workers.</p></div>
+<div class="glossary-item"><strong>SHM worker response MQ</strong><p>Each worker returns its RPC response to the host through a shared-memory MessageQueue rather than a TCP path. The ablation shows that this change alone has only a very small effect in this setup.</p></div>
+<div class="glossary-item"><strong>Hybrid SHM</strong><p>A mixed transport mode: SHM for broadcast from host to workers, but TCP for worker responses back to the host.</p></div>
+<div class="glossary-item"><strong>Full SHM</strong><p>SHM in both directions: broadcast traffic and worker response traffic both use shared memory.</p></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Median TPOT</h2>
+      <p>Lower is better. The sync-output ablation sits visibly above the other three variants across all three models. Hybrid-SHM and full-SHM almost overlap baseline.</p>
+      <div class="figure">
+        <img src="analysis_assets/median_tpot.png" alt="Median TPOT chart">
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Output Throughput</h2>
+      <p>Higher is better. Throughput differences are small overall, but the same pattern remains: sync-output is consistently the weakest variant, while hybrid-SHM and full-SHM stay near baseline.</p>
+      <div class="figure">
+        <img src="analysis_assets/output_throughput.png" alt="Output throughput chart">
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Delta Relative To Baseline</h2>
+      <p>This view makes the ablations easier to compare directly. Positive TPOT deltas are regressions; negative throughput deltas are regressions. The response-SHM difference remains close to zero.</p>
+      <div class="figure">
+        <img src="analysis_assets/delta_vs_baseline.png" alt="Delta to baseline chart">
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Per-Run Metrics</h2>
+      <p>The table below is generated directly from the bench outputs. <code>TPOT delta</code> and <code>tok/s delta</code> are relative to the matching baseline for the same model and TP size.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>TP</th>
+            <th>Variant</th>
+            <th>Succ/Fail</th>
+            <th>Median TPOT</th>
+            <th>TPOT delta</th>
+            <th>Output tok/s</th>
+            <th>tok/s delta</th>
+            <th>Median TTFT</th>
+            <th>Bench file</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Qwen3-4B</td><td>1</td><td>Baseline Docker+MP</td><td>700/300</td><td>9.29</td><td>+0.00</td><td>1062.63</td><td>+0.00</td><td>31.39</td><td>baseline/qwen3_4b/3_docker_mp_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-4B</td><td>1</td><td>DockerBE Sync Output</td><td>700/300</td><td>9.95</td><td>+0.66</td><td>1059.34</td><td>-3.29</td><td>33.16</td><td>dockerbe_sync_output/qwen3_4b/5_host_dockerbe_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-4B</td><td>1</td><td>DockerBE Hybrid SHM</td><td>700/300</td><td>9.31</td><td>+0.02</td><td>1062.14</td><td>-0.49</td><td>32.01</td><td>dockerbe_hybrid_shm/qwen3_4b/5_host_dockerbe_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-4B</td><td>1</td><td>DockerBE Full SHM</td><td>700/300</td><td>9.32</td><td>+0.03</td><td>1062.18</td><td>-0.45</td><td>31.17</td><td>dockerbe_full_shm/qwen3_4b/5_host_dockerbe_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-4B</td><td>2</td><td>Baseline Docker+MP</td><td>700/300</td><td>7.12</td><td>+0.00</td><td>1074.09</td><td>+0.00</td><td>25.65</td><td>baseline/qwen3_4b/4_docker_mp_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-4B</td><td>2</td><td>DockerBE Sync Output</td><td>700/300</td><td>7.75</td><td>+0.63</td><td>1070.55</td><td>-3.54</td><td>27.49</td><td>dockerbe_sync_output/qwen3_4b/6_host_dockerbe_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-4B</td><td>2</td><td>DockerBE Hybrid SHM</td><td>700/300</td><td>7.17</td><td>+0.05</td><td>1073.24</td><td>-0.85</td><td>25.83</td><td>dockerbe_hybrid_shm/qwen3_4b/6_host_dockerbe_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-4B</td><td>2</td><td>DockerBE Full SHM</td><td>700/300</td><td>7.17</td><td>+0.05</td><td>1073.28</td><td>-0.81</td><td>25.66</td><td>dockerbe_full_shm/qwen3_4b/6_host_dockerbe_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-8B</td><td>1</td><td>Baseline Docker+MP</td><td>700/300</td><td>15.06</td><td>+0.00</td><td>1037.99</td><td>+0.00</td><td>48.81</td><td>baseline/qwen3_8b/3_docker_mp_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-8B</td><td>1</td><td>DockerBE Sync Output</td><td>700/300</td><td>15.71</td><td>+0.65</td><td>1035.27</td><td>-2.72</td><td>50.46</td><td>dockerbe_sync_output/qwen3_8b/5_host_dockerbe_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-8B</td><td>1</td><td>DockerBE Hybrid SHM</td><td>700/300</td><td>15.07</td><td>+0.01</td><td>1037.59</td><td>-0.40</td><td>48.10</td><td>dockerbe_hybrid_shm/qwen3_8b/5_host_dockerbe_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-8B</td><td>1</td><td>DockerBE Full SHM</td><td>700/300</td><td>15.07</td><td>+0.01</td><td>1037.61</td><td>-0.38</td><td>48.45</td><td>dockerbe_full_shm/qwen3_8b/5_host_dockerbe_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-8B</td><td>2</td><td>Baseline Docker+MP</td><td>700/300</td><td>9.91</td><td>+0.00</td><td>1061.53</td><td>+0.00</td><td>34.84</td><td>baseline/qwen3_8b/4_docker_mp_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-8B</td><td>2</td><td>DockerBE Sync Output</td><td>700/300</td><td>10.66</td><td>+0.75</td><td>1057.80</td><td>-3.73</td><td>37.30</td><td>dockerbe_sync_output/qwen3_8b/6_host_dockerbe_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-8B</td><td>2</td><td>DockerBE Hybrid SHM</td><td>700/300</td><td>9.94</td><td>+0.03</td><td>1060.78</td><td>-0.75</td><td>34.99</td><td>dockerbe_hybrid_shm/qwen3_8b/6_host_dockerbe_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-8B</td><td>2</td><td>DockerBE Full SHM</td><td>700/300</td><td>9.93</td><td>+0.02</td><td>1060.72</td><td>-0.81</td><td>34.29</td><td>dockerbe_full_shm/qwen3_8b/6_host_dockerbe_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-14B</td><td>1</td><td>Baseline Docker+MP</td><td>700/300</td><td>32.02</td><td>+0.00</td><td>990.10</td><td>+0.00</td><td>95.87</td><td>baseline/qwen3_14b/3_docker_mp_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-14B</td><td>1</td><td>DockerBE Sync Output</td><td>700/300</td><td>32.88</td><td>+0.86</td><td>987.34</td><td>-2.76</td><td>101.00</td><td>dockerbe_sync_output/qwen3_14b/5_host_dockerbe_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-14B</td><td>1</td><td>DockerBE Hybrid SHM</td><td>700/300</td><td>32.07</td><td>+0.05</td><td>989.77</td><td>-0.33</td><td>96.36</td><td>dockerbe_hybrid_shm/qwen3_14b/5_host_dockerbe_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-14B</td><td>1</td><td>DockerBE Full SHM</td><td>700/300</td><td>32.09</td><td>+0.07</td><td>989.67</td><td>-0.43</td><td>96.22</td><td>dockerbe_full_shm/qwen3_14b/5_host_dockerbe_tp1_bench.txt</td></tr>
+<tr><td>Qwen3-14B</td><td>2</td><td>Baseline Docker+MP</td><td>700/300</td><td>17.76</td><td>+0.00</td><td>1033.64</td><td>+0.00</td><td>59.21</td><td>baseline/qwen3_14b/4_docker_mp_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-14B</td><td>2</td><td>DockerBE Sync Output</td><td>700/300</td><td>18.65</td><td>+0.89</td><td>1029.91</td><td>-3.73</td><td>62.65</td><td>dockerbe_sync_output/qwen3_14b/6_host_dockerbe_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-14B</td><td>2</td><td>DockerBE Hybrid SHM</td><td>699/301</td><td>17.80</td><td>+0.04</td><td>1029.92</td><td>-3.72</td><td>59.06</td><td>dockerbe_hybrid_shm/qwen3_14b/6_host_dockerbe_tp2_bench.txt</td></tr>
+<tr><td>Qwen3-14B</td><td>2</td><td>DockerBE Full SHM</td><td>700/300</td><td>17.80</td><td>+0.04</td><td>1032.68</td><td>-0.96</td><td>59.54</td><td>dockerbe_full_shm/qwen3_14b/6_host_dockerbe_tp2_bench.txt</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Artifacts</h2>
+      <p>Machine-readable metrics: <code>analysis_metrics.csv</code></p>
+      <p>Model sweep text summary: <code>model_sweep_summary.txt</code></p>
+      <p>Figure assets: <code>analysis_assets/</code></p>
+    </section>
+  </main>
+</body>
+</html>

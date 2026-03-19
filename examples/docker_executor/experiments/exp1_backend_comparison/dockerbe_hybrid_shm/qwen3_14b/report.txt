@@ -1,0 +1,55 @@
+================================================================
+  Experiment 1 DockerBE Hybrid-SHM Ablation Report
+  Generated: 2026-03-19 02:16:58 UTC
+  Git branch: main
+  Git commit: 2bad5bb1a
+  Model: Qwen/Qwen3-14B
+  GPUs: CUDA_VISIBLE_DEVICES=1,2
+  Dataset: ShareGPT first 1000 prompts (/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json)
+  Benchmark: rate=10 req/s, 3 warmups, --ignore-eos
+  Experiment branch: exp1/dockerbe_hybrid_shm
+  Docker image: vllm/vllm-docker-executor:exp1-dockerbe_hybrid_shm
+================================================================
+
+Run note:
+  Host vLLM runs from the local source tree with DockerDistributedExecutor, SHM broadcast MQ, TCP worker response MQ, and VLLM_DOCKER_ASYNC_OUTPUT_COPY=1.
+
+Optimization set:
+  DockerDistributedExecutor on the host, SHM broadcast MQ, TCP worker response MQ, and VLLM_DOCKER_ASYNC_OUTPUT_COPY=1.
+
+── 5_host_dockerbe_tp1 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     700       
+Failed requests:                         300       
+Benchmark duration (s):                  110.72    
+Request throughput (req/s):              6.32      
+Output token throughput (tok/s):         989.77    
+Peak concurrent requests:                70.00     
+Mean TTFT (ms):                          364.55    
+Median TTFT (ms):                        96.36     
+P99 TTFT (ms):                           5820.69   
+Mean TPOT (ms):                          33.96     
+Median TPOT (ms):                        32.07     
+P99 TPOT (ms):                           95.22     
+Mean ITL (ms):                           32.35     
+Median ITL (ms):                         29.20     
+P99 ITL (ms):                            84.34     
+
+── 6_host_dockerbe_tp2 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     699       
+Failed requests:                         301       
+Benchmark duration (s):                  106.12    
+Request throughput (req/s):              6.59      
+Output token throughput (tok/s):         1029.92   
+Peak concurrent requests:                70.00     
+Mean TTFT (ms):                          348.97    
+Median TTFT (ms):                        59.06     
+P99 TTFT (ms):                           6034.15   
+Mean TPOT (ms):                          19.89     
+Median TPOT (ms):                        17.80     
+P99 TPOT (ms):                           83.50     
+Mean ITL (ms):                           18.59     
+Median ITL (ms):                         16.41     
+P99 ITL (ms):                            58.71     
+

@@ -13,10 +13,11 @@ PORT="${PORT:-8000}"
 NUM_PROMPTS="${NUM_PROMPTS:-500}"
 REQUEST_RATE="${REQUEST_RATE:-10}"
 NUM_WARMUPS="${NUM_WARMUPS:-3}"
-SERVER_STARTUP_TIMEOUT="${SERVER_STARTUP_TIMEOUT:-300}"
-GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.5}"
+SERVER_STARTUP_TIMEOUT="${SERVER_STARTUP_TIMEOUT:-}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-512}"
 SHAREGPT_PATH="${SHAREGPT_PATH:-$REPO_ROOT/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json}"
+SHAREGPT_DATASET_URL="${SHAREGPT_DATASET_URL:-https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json}"
 BASELINE_IMAGE="${BASELINE_IMAGE:-vllm/vllm-docker-executor:exp1-baseline}"
 DOCKERBE_SYNC_OUTPUT_IMAGE="${DOCKERBE_SYNC_OUTPUT_IMAGE:-vllm/vllm-docker-executor:exp1-dockerbe_sync_output}"
 DOCKERBE_HYBRID_SHM_IMAGE="${DOCKERBE_HYBRID_SHM_IMAGE:-vllm/vllm-docker-executor:exp1-dockerbe_hybrid_shm}"
@@ -25,7 +26,7 @@ BASELINE_BRANCH_NAME="${BASELINE_BRANCH_NAME:-exp1/baseline}"
 DOCKERBE_SYNC_OUTPUT_BRANCH_NAME="${DOCKERBE_SYNC_OUTPUT_BRANCH_NAME:-exp1/dockerbe_sync_output}"
 DOCKERBE_HYBRID_SHM_BRANCH_NAME="${DOCKERBE_HYBRID_SHM_BRANCH_NAME:-exp1/dockerbe_hybrid_shm}"
 DOCKERBE_FULL_SHM_BRANCH_NAME="${DOCKERBE_FULL_SHM_BRANCH_NAME:-exp1/dockerbe_full_shm}"
-MODEL_CACHE_HINT="/home/thd/.cache/huggingface/hub/models--Qwen--Qwen3-8B"
+MODEL_CACHE_HINT="${MODEL_CACHE_HINT:-}"
 
 SERVER_PID=""
 LOG_FOLLOW_PID=""
@@ -59,6 +60,59 @@ trim() {
     printf '%s' "$value"
 }
 
+model_slug() {
+    local model_name="${1:-$MODEL}"
+    local slug="${model_name##*/}"
+    slug="${slug//./p}"
+    slug="${slug//-/_}"
+    printf '%s\n' "${slug,,}"
+}
+
+recommended_gpu_memory_utilization() {
+    local model_name="${1:-$MODEL}"
+    case "$model_name" in
+        Qwen/Qwen3-14B)
+            printf '%s\n' "0.85"
+            ;;
+        *)
+            printf '%s\n' "0.50"
+            ;;
+    esac
+}
+
+recommended_startup_timeout() {
+    local model_name="${1:-$MODEL}"
+    case "$model_name" in
+        Qwen/Qwen3-14B)
+            printf '%s\n' "600"
+            ;;
+        *)
+            printf '%s\n' "300"
+            ;;
+    esac
+}
+
+resolve_model_cache_hint() {
+    local model_name="${1:-$MODEL}"
+    local org="${model_name%%/*}"
+    local repo="${model_name##*/}"
+    printf '%s/.cache/huggingface/hub/models--%s--%s\n' "$HOME" "$org" "$repo"
+}
+
+resolve_model_defaults() {
+    if [[ -z "$GPU_MEMORY_UTILIZATION" ]]; then
+        GPU_MEMORY_UTILIZATION="$(recommended_gpu_memory_utilization "$MODEL")"
+    fi
+
+    if [[ -z "$MODEL_CACHE_HINT" ]]; then
+        MODEL_CACHE_HINT="$(resolve_model_cache_hint "$MODEL")"
+    fi
+
+    if [[ -z "${SERVER_STARTUP_TIMEOUT:-}" ]]; then
+        SERVER_STARTUP_TIMEOUT="$(recommended_startup_timeout "$MODEL")"
+    fi
+}
+
 require_tools() {
     local tool=""
     for tool in curl docker git nvidia-smi; do
@@ -80,10 +134,13 @@ require_tools() {
 }
 
 verify_experiment_prereqs() {
+    resolve_model_defaults
     require_tools
 
     if [[ ! -f "$SHAREGPT_PATH" ]]; then
         err "ShareGPT dataset not found: $SHAREGPT_PATH"
+        err "Download it with:"
+        err "  wget -O \"$SHAREGPT_PATH\" \"$SHAREGPT_DATASET_URL\""
         exit 1
     fi
 

@@ -1,0 +1,78 @@
+================================================================
+  Qwen/Qwen3-4B
+  Generated: 2026-03-19 01:24:04 UTC
+  GPUs: CUDA_VISIBLE_DEVICES=1,2
+  Dataset: ShareGPT first 1000 prompts (/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json)
+  GPU memory utilization: 0.50
+================================================================
+
+TP=1 comparison
+  Baseline Docker+MP:       median TPOT 9.29 ms, output tok/s 1062.63
+  DockerBE sync output:     median TPOT 9.95 ms, output tok/s 1059.34
+  DockerBE hybrid SHM:      median TPOT 9.31 ms, output tok/s 1062.14
+  DockerBE full SHM:        median TPOT 9.32 ms, output tok/s 1062.18
+
+TP=2 comparison
+  Baseline Docker+MP:       median TPOT 7.12 ms, output tok/s 1074.09
+  DockerBE sync output:     median TPOT 7.75 ms, output tok/s 1070.55
+  DockerBE hybrid SHM:      median TPOT 7.17 ms, output tok/s 1073.24
+  DockerBE full SHM:        median TPOT 7.17 ms, output tok/s 1073.28
+
+Stored results
+  baseline: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/baseline/qwen3_4b
+  dockerbe_sync_output: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/dockerbe_sync_output/qwen3_4b
+  dockerbe_hybrid_shm: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/dockerbe_hybrid_shm/qwen3_4b
+  dockerbe_full_shm: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/dockerbe_full_shm/qwen3_4b
+
+================================================================
+  Qwen/Qwen3-8B
+  Generated: 2026-03-19 01:54:34 UTC
+  GPUs: CUDA_VISIBLE_DEVICES=1,2
+  Dataset: ShareGPT first 1000 prompts (/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json)
+  GPU memory utilization: 0.50
+================================================================
+
+TP=1 comparison
+  Baseline Docker+MP:       median TPOT 15.06 ms, output tok/s 1037.99
+  DockerBE sync output:     median TPOT 15.71 ms, output tok/s 1035.27
+  DockerBE hybrid SHM:      median TPOT 15.07 ms, output tok/s 1037.59
+  DockerBE full SHM:        median TPOT 15.07 ms, output tok/s 1037.61
+
+TP=2 comparison
+  Baseline Docker+MP:       median TPOT 9.91 ms, output tok/s 1061.53
+  DockerBE sync output:     median TPOT 10.66 ms, output tok/s 1057.80
+  DockerBE hybrid SHM:      median TPOT 9.94 ms, output tok/s 1060.78
+  DockerBE full SHM:        median TPOT 9.93 ms, output tok/s 1060.72
+
+Stored results
+  baseline: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/baseline/qwen3_8b
+  dockerbe_sync_output: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/dockerbe_sync_output/qwen3_8b
+  dockerbe_hybrid_shm: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/dockerbe_hybrid_shm/qwen3_8b
+  dockerbe_full_shm: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/dockerbe_full_shm/qwen3_8b
+
+================================================================
+  Qwen/Qwen3-14B
+  Generated: 2026-03-19 02:24:26 UTC
+  GPUs: CUDA_VISIBLE_DEVICES=1,2
+  Dataset: ShareGPT first 1000 prompts (/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json)
+  GPU memory utilization: 0.85
+================================================================
+
+TP=1 comparison
+  Baseline Docker+MP:       median TPOT 32.02 ms, output tok/s 990.10
+  DockerBE sync output:     median TPOT 32.88 ms, output tok/s 987.34
+  DockerBE hybrid SHM:      median TPOT 32.07 ms, output tok/s 989.77
+  DockerBE full SHM:        median TPOT 32.09 ms, output tok/s 989.67
+
+TP=2 comparison
+  Baseline Docker+MP:       median TPOT 17.76 ms, output tok/s 1033.64
+  DockerBE sync output:     median TPOT 18.65 ms, output tok/s 1029.91
+  DockerBE hybrid SHM:      median TPOT 17.80 ms, output tok/s 1029.92
+  DockerBE full SHM:        median TPOT 17.80 ms, output tok/s 1032.68
+
+Stored results
+  baseline: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/baseline/qwen3_14b
+  dockerbe_sync_output: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/dockerbe_sync_output/qwen3_14b
+  dockerbe_hybrid_shm: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/dockerbe_hybrid_shm/qwen3_14b
+  dockerbe_full_shm: /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/dockerbe_full_shm/qwen3_14b
+

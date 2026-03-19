@@ -26,7 +26,31 @@ The older historical reproductions and profiling-only artifacts remain under `ar
 - [run_dockerbe_hybrid_shm.sh](/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/run_dockerbe_hybrid_shm.sh): run the response-SHM ablation
 - [run_dockerbe_full_shm.sh](/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/run_dockerbe_full_shm.sh): run the optimized DockerBE comparison
 - [run_benchmark.sh](/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/run_benchmark.sh): run the baseline plus all active DockerBE variants and write a combined summary
+- [run_model_sweep.sh](/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/run_model_sweep.sh): run the four active variants across `Qwen3-4B`, `Qwen3-8B`, and `Qwen3-14B`, storing each model under a subdirectory like `baseline/qwen3_8b/`
 - [exp1_common.sh](/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/exp1_common.sh): shared defaults, cleanup, GPU policy, and report helpers
+
+## Dataset Preflight
+
+All active exp1 scripts expect the dataset file at:
+
+```bash
+/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json
+```
+
+Check that it exists before running benchmarks:
+
+```bash
+test -f /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json
+```
+
+If it is missing, download it with:
+
+```bash
+wget -O /home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json \
+  https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
+```
+
+The shared preflight in [exp1_common.sh](/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/experiments/exp1_backend_comparison/exp1_common.sh) checks this path automatically and prints the same `wget` command if the file is missing.
 
 ## How To Reproduce
 
@@ -69,6 +93,13 @@ These directories were reset for the cleaned `Qwen3-8B` rerun. The historical `Q
 - `dockerbe_sync_output`: branch `exp1/dockerbe_sync_output`, image `vllm/vllm-docker-executor:exp1-dockerbe_sync_output`
 - `dockerbe_hybrid_shm`: branch `exp1/dockerbe_hybrid_shm`, image `vllm/vllm-docker-executor:exp1-dockerbe_hybrid_shm`
 - `dockerbe_full_shm`: branch `exp1/dockerbe_full_shm`, image `vllm/vllm-docker-executor:exp1-dockerbe_full_shm`
+
+Published Docker Hub tags:
+
+- `tth37/vllm-docker-executor:exp1-baseline`
+- `tth37/vllm-docker-executor:exp1-dockerbe_sync_output`
+- `tth37/vllm-docker-executor:exp1-dockerbe_hybrid_shm`
+- `tth37/vllm-docker-executor:exp1-dockerbe_full_shm`
 
 ## Historical Provenance
 
