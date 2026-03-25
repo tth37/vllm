@@ -1,0 +1,129 @@
+# Config E: Single GPU — 1 GPU per container + private IPC + bridge network
+# Expected: NET/Socket TCP transport (known bad from exp1, ~3 GB/s)
+# Isolation: FULL (this is the exp1 lower bound)
+
+services:
+  rank0:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-sgpu-rank0
+    runtime: nvidia
+    # ipc: private (default)
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=4
+      - RANK=0
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - OUTPUT_FILE=/results/single_gpu_results.json
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - ../results:/results
+    networks:
+      - exp2-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+
+  rank1:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-sgpu-rank1
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=1
+      - CUDA_VISIBLE_DEVICES=0
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=4
+      - RANK=1
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+    networks:
+      - exp2-net
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+
+  rank2:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-sgpu-rank2
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=2
+      - CUDA_VISIBLE_DEVICES=0
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=4
+      - RANK=2
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+    networks:
+      - exp2-net
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['2']
+              capabilities: [gpu]
+
+  rank3:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-sgpu-rank3
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=3
+      - CUDA_VISIBLE_DEVICES=0
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=4
+      - RANK=3
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+    networks:
+      - exp2-net
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['3']
+              capabilities: [gpu]
+
+networks:
+  exp2-net:
+    driver: bridge

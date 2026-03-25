@@ -1,0 +1,3 @@
+[submodule "examples/docker_executor/experiments/exp2_nccl_isolation/nccl"]
+	path = examples/docker_executor/experiments/exp2_nccl_isolation/nccl
+	url = https://github.com/NVIDIA/nccl.git

@@ -1,0 +1,33 @@
+# NCCL Development Build Environment
+# For building patched NCCL from source with CUDA 12.4
+#
+# Usage (from exp2 root):
+#   docker build -f phase3_nccl_patch/Dockerfile.nccl-dev -t nccl-dev:latest .
+
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PyTorch 2.5.1 with CUDA 12.4
+RUN pip3 install --no-cache-dir \
+    torch==2.5.1 \
+    --index-url https://download.pytorch.org/whl/cu124
+
+WORKDIR /workspace
+
+# NCCL source will be cloned here by build_nccl.sh
+RUN mkdir -p /workspace/nccl /workspace/patches
+
+# Copy benchmark scripts (build context is exp2 root)
+COPY benchmark.py /workspace/benchmark.py
+COPY benchmark_docker.py /workspace/benchmark_docker.py
+COPY phase3_nccl_patch/build_nccl.sh /workspace/build_nccl.sh
+RUN chmod +x /workspace/build_nccl.sh
+
+CMD ["python3", "benchmark_docker.py"]
