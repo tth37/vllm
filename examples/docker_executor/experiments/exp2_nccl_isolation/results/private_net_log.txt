@@ -1,0 +1,240 @@
+time="2026-03-26T10:35:02+08:00" level=warning msg="No services to build"
+ Network phase1_isolation_matrix_exp2-net Creating 
+ Network phase1_isolation_matrix_exp2-net Created 
+ Volume phase1_isolation_matrix_nccl-tmp Creating 
+ Volume phase1_isolation_matrix_nccl-tmp Created 
+ Container exp2-prnet-rank0 Creating 
+ Container exp2-prnet-rank0 Created 
+ Container exp2-prnet-rank1 Creating 
+ Container exp2-prnet-rank2 Creating 
+ Container exp2-prnet-rank3 Creating 
+ Container exp2-prnet-rank3 Created 
+ Container exp2-prnet-rank2 Created 
+ Container exp2-prnet-rank1 Created 
+Attaching to exp2-prnet-rank0, exp2-prnet-rank1, exp2-prnet-rank2, exp2-prnet-rank3
+ Container exp2-prnet-rank0 Starting 
+ Container exp2-prnet-rank0 Started 
+exp2-prnet-rank0  | 
+exp2-prnet-rank0  | ==========
+exp2-prnet-rank0  | == CUDA ==
+ Container exp2-prnet-rank3 Starting 
+ Container exp2-prnet-rank2 Starting 
+ Container exp2-prnet-rank1 Starting 
+exp2-prnet-rank0  | ==========
+exp2-prnet-rank0  | 
+exp2-prnet-rank0  | CUDA Version 12.4.0
+exp2-prnet-rank0  | 
+exp2-prnet-rank0  | Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+exp2-prnet-rank0  | 
+exp2-prnet-rank0  | This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+exp2-prnet-rank0  | By pulling and using the container, you accept the terms and conditions of this license:
+exp2-prnet-rank0  | https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+exp2-prnet-rank0  | 
+exp2-prnet-rank0  | A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+exp2-prnet-rank0  | 
+ Container exp2-prnet-rank2 Started 
+exp2-prnet-rank2  | 
+exp2-prnet-rank2  | ==========
+exp2-prnet-rank2  | == CUDA ==
+exp2-prnet-rank2  | ==========
+exp2-prnet-rank2  | 
+exp2-prnet-rank2  | CUDA Version 12.4.0
+exp2-prnet-rank2  | 
+exp2-prnet-rank2  | Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+exp2-prnet-rank2  | 
+exp2-prnet-rank2  | This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+exp2-prnet-rank2  | By pulling and using the container, you accept the terms and conditions of this license:
+exp2-prnet-rank2  | https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+exp2-prnet-rank2  | 
+exp2-prnet-rank2  | A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+exp2-prnet-rank2  | 
+ Container exp2-prnet-rank3 Started 
+exp2-prnet-rank3  | 
+exp2-prnet-rank3  | ==========
+exp2-prnet-rank3  | == CUDA ==
+exp2-prnet-rank3  | ==========
+exp2-prnet-rank3  | 
+exp2-prnet-rank3  | CUDA Version 12.4.0
+exp2-prnet-rank3  | 
+exp2-prnet-rank3  | Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+exp2-prnet-rank3  | 
+exp2-prnet-rank3  | This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+exp2-prnet-rank3  | By pulling and using the container, you accept the terms and conditions of this license:
+exp2-prnet-rank3  | https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+exp2-prnet-rank3  | 
+exp2-prnet-rank3  | A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+exp2-prnet-rank3  | 
+ Container exp2-prnet-rank1 Started 
+exp2-prnet-rank1  | 
+exp2-prnet-rank1  | ==========
+exp2-prnet-rank1  | == CUDA ==
+exp2-prnet-rank1  | ==========
+exp2-prnet-rank1  | 
+exp2-prnet-rank1  | CUDA Version 12.4.0
+exp2-prnet-rank1  | 
+exp2-prnet-rank1  | Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+exp2-prnet-rank1  | 
+exp2-prnet-rank1  | This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+exp2-prnet-rank1  | By pulling and using the container, you accept the terms and conditions of this license:
+exp2-prnet-rank1  | https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+exp2-prnet-rank1  | 
+exp2-prnet-rank1  | A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+exp2-prnet-rank1  | 
+exp2-prnet-rank0  | 
+exp2-prnet-rank0  | ============================================================
+exp2-prnet-rank0  | NCCL Smoke Test - Docker Container
+exp2-prnet-rank0  | ============================================================
+exp2-prnet-rank0  | World Size: 4
+exp2-prnet-rank0  | CUDA Version: 12.4
+exp2-prnet-rank0  | NCCL Version: (2, 21, 5)
+exp2-prnet-rank0  | GPU: NVIDIA A30
+exp2-prnet-rank0  | ============================================================
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1811936 [0] NCCL INFO Bootstrap : Using eth0:172.18.0.2<0>
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1811936 [0] NCCL INFO NET/Plugin: No plugin found (libnccl-net.so)
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1811936 [0] NCCL INFO NET/Plugin: Using internal network plugin.
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1811936 [0] NCCL INFO cudaDriverVersion 13000
+exp2-prnet-rank0  | NCCL version 2.21.5+cuda12.4
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1813603 [0] NCCL INFO cudaDriverVersion 13000
+exp2-prnet-rank3  | 71909c79de9e:1813131:1813131 [0] NCCL INFO cudaDriverVersion 13000
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1813094 [0] NCCL INFO cudaDriverVersion 13000
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1813603 [0] NCCL INFO Bootstrap : Using eth0:172.18.0.5<0>
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1813094 [0] NCCL INFO Bootstrap : Using eth0:172.18.0.3<0>
+exp2-prnet-rank3  | 71909c79de9e:1813131:1813131 [0] NCCL INFO Bootstrap : Using eth0:172.18.0.4<0>
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1813603 [0] NCCL INFO NET/Plugin: No plugin found (libnccl-net.so)
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1813603 [0] NCCL INFO NET/Plugin: Using internal network plugin.
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1813094 [0] NCCL INFO NET/Plugin: No plugin found (libnccl-net.so)
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1813094 [0] NCCL INFO NET/Plugin: Using internal network plugin.
+exp2-prnet-rank3  | 71909c79de9e:1813131:1813131 [0] NCCL INFO NET/Plugin: No plugin found (libnccl-net.so)
+exp2-prnet-rank3  | 71909c79de9e:1813131:1813131 [0] NCCL INFO NET/Plugin: Using internal network plugin.
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Failed to open libibverbs.so[.1]
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO NET/Socket : Using [0]eth0:172.18.0.3<0>
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Using non-device net plugin version 0
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Using network Socket
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Failed to open libibverbs.so[.1]
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO NET/Socket : Using [0]eth0:172.18.0.4<0>
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Using non-device net plugin version 0
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Using network Socket
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Failed to open libibverbs.so[.1]
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO NET/Socket : Using [0]eth0:172.18.0.2<0>
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Using non-device net plugin version 0
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Using network Socket
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Failed to open libibverbs.so[.1]
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO NET/Socket : Using [0]eth0:172.18.0.5<0>
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Using non-device net plugin version 0
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Using network Socket
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO ncclCommInitRank comm 0x55829ab052b0 rank 1 nranks 4 cudaDev 0 nvmlDev 1 busId 38000 commId 0x9e7881c7883d4b46 - Init START
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO ncclCommInitRank comm 0x55b631b1d370 rank 2 nranks 4 cudaDev 0 nvmlDev 2 busId 98000 commId 0x9e7881c7883d4b46 - Init START
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO ncclCommInitRank comm 0x5608fb56dae0 rank 0 nranks 4 cudaDev 0 nvmlDev 0 busId 27000 commId 0x9e7881c7883d4b46 - Init START
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO ncclCommInitRank comm 0x561b0effd500 rank 3 nranks 4 cudaDev 0 nvmlDev 3 busId a8000 commId 0x9e7881c7883d4b46 - Init START
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO NET/Socket : GPU Direct RDMA Disabled for HCA 0 'eth0'
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Setting affinity for GPU 2 to ff,00000000,000000ff,00000000
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO NVLS multicast support is not available on dev 0
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO NET/Socket : GPU Direct RDMA Disabled for HCA 0 'eth0'
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Setting affinity for GPU 3 to ff0000,00000000,00ff0000,00000000
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO NVLS multicast support is not available on dev 0
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO NET/Socket : GPU Direct RDMA Disabled for HCA 0 'eth0'
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO NET/Socket : GPU Direct RDMA Disabled for HCA 0 'eth0'
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Setting affinity for GPU 0 to ff0000,00000000,00ff0000
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO NVLS multicast support is not available on dev 0
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Setting affinity for GPU 1 to ff0000,00000000,00ff0000
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO NVLS multicast support is not available on dev 0
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO comm 0x55b631b1d370 rank 2 nRanks 4 nNodes 1 localRanks 4 localRank 2 MNNVL 0
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Trees [0] 3/-1/-1->2->1 [1] -1/-1/-1->2->3 [2] 3/-1/-1->2->1 [3] -1/-1/-1->2->3
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO P2P Chunksize set to 131072
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO comm 0x55829ab052b0 rank 1 nRanks 4 nNodes 1 localRanks 4 localRank 1 MNNVL 0
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Trees [0] 2/-1/-1->1->0 [1] 3/-1/-1->1->0 [2] 2/-1/-1->1->0 [3] 3/-1/-1->1->0
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO P2P Chunksize set to 131072
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO comm 0x561b0effd500 rank 3 nRanks 4 nNodes 1 localRanks 4 localRank 3 MNNVL 0
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Trees [0] -1/-1/-1->3->2 [1] 2/-1/-1->3->1 [2] -1/-1/-1->3->2 [3] 2/-1/-1->3->1
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO P2P Chunksize set to 131072
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO comm 0x5608fb56dae0 rank 0 nRanks 4 nNodes 1 localRanks 4 localRank 0 MNNVL 0
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Channel 00/04 :    0   1   2   3
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Channel 01/04 :    0   1   3   2
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Channel 02/04 :    0   1   2   3
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Channel 03/04 :    0   1   3   2
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1 [2] 1/-1/-1->0->-1 [3] 1/-1/-1->0->-1
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO P2P Chunksize set to 131072
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Channel 00 : 2[2] -> 3[3] via SHM/direct/direct
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Channel 02 : 2[2] -> 3[3] via SHM/direct/direct
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Channel 00 : 3[3] -> 0[0] via SHM/direct/direct
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Channel 02 : 3[3] -> 0[0] via SHM/direct/direct
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Channel 00 : 0[0] -> 1[1] via SHM/direct/direct
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Channel 01 : 0[0] -> 1[1] via SHM/direct/direct
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Channel 02 : 0[0] -> 1[1] via SHM/direct/direct
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Channel 03 : 0[0] -> 1[1] via SHM/direct/direct
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Channel 00 : 1[1] -> 2[2] via SHM/direct/direct
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Channel 02 : 1[1] -> 2[2] via SHM/direct/direct
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Channel 01 : 1[1] -> 3[3] via SHM/direct/direct
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Channel 01 : 2[2] -> 0[0] via SHM/direct/direct
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Channel 03 : 1[1] -> 3[3] via SHM/direct/direct
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Channel 03 : 2[2] -> 0[0] via SHM/direct/direct
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Channel 01 : 3[3] -> 2[2] via SHM/direct/direct
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Channel 03 : 3[3] -> 2[2] via SHM/direct/direct
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Connected all rings
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Connected all rings
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Connected all rings
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Connected all rings
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Channel 01 : 2[2] -> 3[3] via SHM/direct/direct
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Channel 03 : 2[2] -> 3[3] via SHM/direct/direct
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Channel 01 : 3[3] -> 1[1] via SHM/direct/direct
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Channel 03 : 3[3] -> 1[1] via SHM/direct/direct
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Channel 00 : 3[3] -> 2[2] via SHM/direct/direct
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Channel 02 : 3[3] -> 2[2] via SHM/direct/direct
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Channel 00 : 2[2] -> 1[1] via SHM/direct/direct
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Channel 02 : 2[2] -> 1[1] via SHM/direct/direct
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Channel 00 : 1[1] -> 0[0] via SHM/direct/direct
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Channel 01 : 1[1] -> 0[0] via SHM/direct/direct
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Channel 02 : 1[1] -> 0[0] via SHM/direct/direct
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Channel 03 : 1[1] -> 0[0] via SHM/direct/direct
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Connected all trees
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO threadThresholds 8/8/64 | 32/8/64 | 512 | 512
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO 4 coll channels, 4 collnet channels, 0 nvls channels, 4 p2p channels, 2 p2p channels per peer
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Connected all trees
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO threadThresholds 8/8/64 | 32/8/64 | 512 | 512
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO 4 coll channels, 4 collnet channels, 0 nvls channels, 4 p2p channels, 2 p2p channels per peer
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Connected all trees
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO threadThresholds 8/8/64 | 32/8/64 | 512 | 512
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO 4 coll channels, 4 collnet channels, 0 nvls channels, 4 p2p channels, 2 p2p channels per peer
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Connected all trees
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO threadThresholds 8/8/64 | 32/8/64 | 512 | 512
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO 4 coll channels, 4 collnet channels, 0 nvls channels, 4 p2p channels, 2 p2p channels per peer
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814427 [0] NCCL INFO New proxy send connection 0 from local rank 3, transport 2
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO Connected to proxy localRank 3 -> connection 0x7fe75c004f40
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814427 [0] NCCL INFO Allocated shareable buffer 0x7fe787800000 size 8388608 ipcDesc 0x7fe75c008e78
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814428 [0] NCCL INFO New proxy send connection 0 from local rank 2, transport 2
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO Connected to proxy localRank 2 -> connection 0x7faff0004f40
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814428 [0] NCCL INFO Allocated shareable buffer 0x7fb015800000 size 8388608 ipcDesc 0x7faff0008e78
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814430 [0] NCCL INFO New proxy send connection 0 from local rank 0, transport 2
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO Connected to proxy localRank 0 -> connection 0x7fb6a4004fd0
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814431 [0] NCCL INFO New proxy send connection 0 from local rank 1, transport 2
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO Connected to proxy localRank 1 -> connection 0x7f1258004f40
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814430 [0] NCCL INFO Allocated shareable buffer 0x7fb6bb800000 size 8388608 ipcDesc 0x7fb6a4008e88
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814431 [0] NCCL INFO Allocated shareable buffer 0x7f1285800000 size 8388608 ipcDesc 0x7f1258008e78
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814423 [0] NCCL INFO ncclCommInitRank comm 0x5608fb56dae0 rank 0 nranks 4 cudaDev 0 nvmlDev 0 busId 27000 commId 0x9e7881c7883d4b46 - Init COMPLETE
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814426 [0] NCCL INFO ncclCommInitRank comm 0x561b0effd500 rank 3 nranks 4 cudaDev 0 nvmlDev 3 busId a8000 commId 0x9e7881c7883d4b46 - Init COMPLETE
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814425 [0] NCCL INFO ncclCommInitRank comm 0x55b631b1d370 rank 2 nranks 4 cudaDev 0 nvmlDev 2 busId 98000 commId 0x9e7881c7883d4b46 - Init COMPLETE
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814424 [0] NCCL INFO ncclCommInitRank comm 0x55829ab052b0 rank 1 nranks 4 cudaDev 0 nvmlDev 1 busId 38000 commId 0x9e7881c7883d4b46 - Init COMPLETE
+exp2-prnet-rank0  | ✓ All-Reduce test PASSED: 4 == 4
+exp2-prnet-rank0  | ============================================================
+exp2-prnet-rank0  | 
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814427 [0] NCCL INFO [Service thread] Connection closed by localRank 3
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814430 [0] NCCL INFO [Service thread] Connection closed by localRank 0
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814431 [0] NCCL INFO [Service thread] Connection closed by localRank 1
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814428 [0] NCCL INFO [Service thread] Connection closed by localRank 2
+exp2-prnet-rank3  | 71909c79de9e:1813131:1814441 [0] NCCL INFO comm 0x561b0effd500 rank 3 nranks 4 cudaDev 0 busId a8000 - Abort COMPLETE
+exp2-prnet-rank2  | d3a6cfa9dbf6:1813094:1814439 [0] NCCL INFO comm 0x55b631b1d370 rank 2 nranks 4 cudaDev 0 busId 98000 - Abort COMPLETE
+exp2-prnet-rank0  | 9bac9a9e5d15:1811936:1814442 [0] NCCL INFO comm 0x5608fb56dae0 rank 0 nranks 4 cudaDev 0 busId 27000 - Abort COMPLETE
+exp2-prnet-rank1  | fbd809ae0b82:1813603:1814440 [0] NCCL INFO comm 0x55829ab052b0 rank 1 nranks 4 cudaDev 0 busId 38000 - Abort COMPLETE
+[Kexp2-prnet-rank0 exited with code 0
+ Compose Stopping Aborting on container exit...
+ Container exp2-prnet-rank2 Stopping 
+ Container exp2-prnet-rank3 Stopping 
+ Container exp2-prnet-rank1 Stopping 
+ Container exp2-prnet-rank1 Stopped 
+[Kexp2-prnet-rank1 exited with code 0
+ Container exp2-prnet-rank3 Stopped 
+[Kexp2-prnet-rank3 exited with code 0
+ Container exp2-prnet-rank2 Stopped 
+ Container exp2-prnet-rank0 Stopping 
+ Container exp2-prnet-rank0 Stopped 
+[Kexp2-prnet-rank2 exited with code 0

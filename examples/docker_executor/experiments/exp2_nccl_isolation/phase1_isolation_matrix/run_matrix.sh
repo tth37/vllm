@@ -86,13 +86,17 @@ for config in "${CONFIGS[@]}"; do
     LOG_FILE="$RESULTS_DIR/${config}_log.txt"
 
     if [ "$SMOKE" = "true" ]; then
+        set +e
         SMOKE_TEST=true docker compose -f "$COMPOSE_FILE" up \
             --abort-on-container-exit 2>&1 | tee "$LOG_FILE"
         EXIT_CODE=${PIPESTATUS[0]}
+        set -e
     else
+        set +e
         docker compose -f "$COMPOSE_FILE" up \
             --abort-on-container-exit 2>&1 | tee "$LOG_FILE"
         EXIT_CODE=${PIPESTATUS[0]}
+        set -e
     fi
 
     # Extract NCCL transport from logs

@@ -1,0 +1,177 @@
+# SHM Workaround: Per-GPU CUDA isolation + shared /dev/shm + NCCL topology override
+#
+# Goal: Achieve SHM transport (host-memory-mediated GPU↔GPU) with per-GPU isolation.
+#
+# Key settings:
+#   - NVIDIA_VISIBLE_DEVICES=0,1,2,3  → NVML sees all GPUs (topology discovery)
+#   - CUDA_VISIBLE_DEVICES=N          → Each rank uses only its assigned GPU
+#   - NCCL_HOSTID=exp2-node           → All ranks appear co-located
+#   - NCCL_NET_DISABLE_INTRA=1        → Don't prefer NET over SHM for intra-node
+#   - NCCL_P2P_DISABLE=1              → Skip P2P (CUDA IPC won't work cross-container)
+#   - NCCL_SHM_DISABLE=0              → Explicitly enable SHM
+#   - shared-shm volume at /dev/shm   → Same shmDev across containers
+#   - nccl-tmp volume at /tmp         → Shared UDS for NCCL bootstrap
+#   - bridge network                  → Network namespace isolation
+#   - ipc: private (default)          → IPC namespace isolation
+#
+# Expected transport: SHM/direct (host memory mediated)
+# Isolation level: CUDA device, IPC namespace, network namespace
+
+services:
+  rank0:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-shmwa-rank0
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3
+      - CUDA_VISIBLE_DEVICES=0
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - NCCL_NET_DISABLE_INTRA=1
+      - NCCL_P2P_DISABLE=1
+      - NCCL_SHM_DISABLE=0
+      - WORLD_SIZE=4
+      - RANK=0
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - OUTPUT_FILE=/results/shm_workaround_results.json
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - ../results:/results
+      - shared-shm:/dev/shm
+      - nccl-tmp:/tmp
+    networks:
+      - exp2-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1', '2', '3']
+              capabilities: [gpu]
+
+  rank1:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-shmwa-rank1
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3
+      - CUDA_VISIBLE_DEVICES=1
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - NCCL_NET_DISABLE_INTRA=1
+      - NCCL_P2P_DISABLE=1
+      - NCCL_SHM_DISABLE=0
+      - WORLD_SIZE=4
+      - RANK=1
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - shared-shm:/dev/shm
+      - nccl-tmp:/tmp
+    networks:
+      - exp2-net
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1', '2', '3']
+              capabilities: [gpu]
+
+  rank2:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-shmwa-rank2
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3
+      - CUDA_VISIBLE_DEVICES=2
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - NCCL_NET_DISABLE_INTRA=1
+      - NCCL_P2P_DISABLE=1
+      - NCCL_SHM_DISABLE=0
+      - WORLD_SIZE=4
+      - RANK=2
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - shared-shm:/dev/shm
+      - nccl-tmp:/tmp
+    networks:
+      - exp2-net
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1', '2', '3']
+              capabilities: [gpu]
+
+  rank3:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-shmwa-rank3
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3
+      - CUDA_VISIBLE_DEVICES=3
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - NCCL_NET_DISABLE_INTRA=1
+      - NCCL_P2P_DISABLE=1
+      - NCCL_SHM_DISABLE=0
+      - WORLD_SIZE=4
+      - RANK=3
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - shared-shm:/dev/shm
+      - nccl-tmp:/tmp
+    networks:
+      - exp2-net
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1', '2', '3']
+              capabilities: [gpu]
+
+networks:
+  exp2-net:
+    driver: bridge
+
+volumes:
+  shared-shm:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=4g
+  nccl-tmp:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=200m

@@ -1,0 +1,145 @@
+# Config G: NVML-Visible — All GPUs visible to NVML + single CUDA device + private IPC + bridge network
+# Hypothesis: NCCL needs NVML to detect GPU topology (PCI bus IDs, NVLink, etc.).
+#   By exposing all GPUs at the NVIDIA driver level but restricting CUDA_VISIBLE_DEVICES
+#   to a single GPU, each container uses only its assigned GPU for compute while NCCL
+#   can still discover the full topology. With bridge network + shared /tmp for UDS,
+#   NCCL may be able to use P2P/SHM transport despite namespace isolation.
+# Isolation: IPC + Network (but all GPUs visible to driver/NVML)
+
+services:
+  rank0:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-nvml-rank0
+    runtime: nvidia
+    # ipc: private (default)
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3
+      - CUDA_VISIBLE_DEVICES=0
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=4
+      - RANK=0
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - OUTPUT_FILE=/results/nvml_visible_results.json
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - ../results:/results
+      - nccl-tmp:/tmp
+    networks:
+      - exp2-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1', '2', '3']
+              capabilities: [gpu]
+
+  rank1:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-nvml-rank1
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3
+      - CUDA_VISIBLE_DEVICES=1
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=4
+      - RANK=1
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - nccl-tmp:/tmp
+    networks:
+      - exp2-net
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1', '2', '3']
+              capabilities: [gpu]
+
+  rank2:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-nvml-rank2
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3
+      - CUDA_VISIBLE_DEVICES=2
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=4
+      - RANK=2
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - nccl-tmp:/tmp
+    networks:
+      - exp2-net
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1', '2', '3']
+              capabilities: [gpu]
+
+  rank3:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-nvml-rank3
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3
+      - CUDA_VISIBLE_DEVICES=3
+      - NCCL_HOSTID=exp2-node
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=4
+      - RANK=3
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - nccl-tmp:/tmp
+    networks:
+      - exp2-net
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1', '2', '3']
+              capabilities: [gpu]
+
+networks:
+  exp2-net:
+    driver: bridge
+
+volumes:
+  nccl-tmp:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=200m
