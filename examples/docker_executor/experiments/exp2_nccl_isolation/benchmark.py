@@ -13,102 +13,113 @@ from typing import Dict, List, Tuple
 from datetime import datetime
 
 
+def _compute_stats(times: List[float], trim_pct: float = 0.05) -> Tuple[float, float]:
+    """Compute trimmed mean and std, dropping top/bottom trim_pct of samples."""
+    sorted_times = sorted(times)
+    n = len(sorted_times)
+    trim_count = int(n * trim_pct)
+    if trim_count > 0 and n > 2 * trim_count + 2:
+        trimmed = sorted_times[trim_count:-trim_count]
+    else:
+        trimmed = sorted_times
+    avg = sum(trimmed) / len(trimmed)
+    std = torch.tensor(trimmed).std().item()
+    return avg, std
+
+
 class CommBenchmark:
     """Benchmark for distributed communication operations."""
-    
+
     def __init__(self, rank: int, world_size: int, device: torch.device):
         self.rank = rank
         self.world_size = world_size
         self.device = device
         self.results = {}
-        
+
     def warmup(self, iterations: int = 10):
         """Warmup to stabilize GPU clocks."""
         tensor = torch.randn(1024, device=self.device)
         for _ in range(iterations):
             dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         torch.cuda.synchronize()
-        
+
     def benchmark_all_reduce(self, sizes: List[int], iterations: int = 100) -> Dict:
         """Benchmark all-reduce operation with different tensor sizes."""
         results = {}
-        
+
         for size in sizes:
-            # Create tensor
             tensor = torch.randn(size, device=self.device, dtype=torch.float32)
+            buf = torch.empty_like(tensor)
             size_mb = tensor.numel() * tensor.element_size() / (1024 * 1024)
-            
-            # Warmup
+
+            # Warmup with same-sized tensor
             for _ in range(10):
-                dist.all_reduce(tensor.clone(), op=dist.ReduceOp.SUM)
+                buf.copy_(tensor)
+                dist.all_reduce(buf, op=dist.ReduceOp.SUM)
             torch.cuda.synchronize()
-            
-            # Benchmark
+
+            # Benchmark — pre-copy then time only the collective
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
-            
+
             times = []
             for _ in range(iterations):
-                tensor_copy = tensor.clone()
+                buf.copy_(tensor)
+                torch.cuda.synchronize()
                 start.record()
-                dist.all_reduce(tensor_copy, op=dist.ReduceOp.SUM)
+                dist.all_reduce(buf, op=dist.ReduceOp.SUM)
                 end.record()
                 torch.cuda.synchronize()
                 times.append(start.elapsed_time(end))
-            
-            avg_time_ms = sum(times) / len(times)
-            std_time_ms = torch.tensor(times).std().item()
+
+            avg_time_ms, std_time_ms = _compute_stats(times)
             bandwidth_gbps = (size_mb / 1024) / (avg_time_ms / 1000)
-            
+
             results[f"{size_mb:.2f}MB"] = {
                 "avg_time_ms": avg_time_ms,
                 "std_time_ms": std_time_ms,
                 "bandwidth_gbps": bandwidth_gbps,
                 "size_elements": size,
             }
-            
+
             if self.rank == 0:
                 print(f"  All-Reduce {size_mb:8.2f} MB: {avg_time_ms:7.3f} ± {std_time_ms:6.3f} ms, "
                       f"{bandwidth_gbps:6.2f} GB/s")
-        
+
         return results
-    
+
     def benchmark_all_gather(self, sizes: List[int], iterations: int = 100) -> Dict:
         """Benchmark all-gather operation."""
         results = {}
-        
+
         for size in sizes:
-            # Input tensor (each rank has its own)
             tensor = torch.randn(size, device=self.device, dtype=torch.float32)
-            # Output tensor (concatenated from all ranks)
-            output = torch.empty(size * self.world_size, device=self.device, dtype=torch.float32)
-            
+            # Pre-allocate output list once
+            tensor_list = [torch.empty_like(tensor) for _ in range(self.world_size)]
+
             size_mb = tensor.numel() * tensor.element_size() / (1024 * 1024)
             total_size_mb = size_mb * self.world_size
-            
+
             # Warmup
             for _ in range(10):
-                tensor_list = [torch.empty_like(tensor) for _ in range(self.world_size)]
                 dist.all_gather(tensor_list, tensor)
             torch.cuda.synchronize()
-            
-            # Benchmark
+
+            # Benchmark — reuse pre-allocated output list
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
-            
+
             times = []
             for _ in range(iterations):
-                tensor_list = [torch.empty_like(tensor) for _ in range(self.world_size)]
                 start.record()
                 dist.all_gather(tensor_list, tensor)
                 end.record()
                 torch.cuda.synchronize()
                 times.append(start.elapsed_time(end))
-            
-            avg_time_ms = sum(times) / len(times)
-            std_time_ms = torch.tensor(times).std().item()
+
+            avg_time_ms, std_time_ms = _compute_stats(times)
             bandwidth_gbps = (total_size_mb / 1024) / (avg_time_ms / 1000)
-            
+
             results[f"{size_mb:.2f}MB"] = {
                 "avg_time_ms": avg_time_ms,
                 "std_time_ms": std_time_ms,
@@ -116,121 +127,114 @@ class CommBenchmark:
                 "size_elements": size,
                 "total_size_mb": total_size_mb,
             }
-            
+
             if self.rank == 0:
                 print(f"  All-Gather {size_mb:8.2f} MB: {avg_time_ms:7.3f} ± {std_time_ms:6.3f} ms, "
                       f"{bandwidth_gbps:6.2f} GB/s")
-        
+
         return results
-    
+
     def benchmark_reduce_scatter(self, sizes: List[int], iterations: int = 100) -> Dict:
-        """Benchmark reduce-scatter operation."""
+        """Benchmark reduce-scatter operation using reduce_scatter_tensor."""
         results = {}
-        
+
         for size in sizes:
             # Input must be divisible by world_size
             total_size = (size // self.world_size) * self.world_size
             per_rank_size = total_size // self.world_size
-            
+
             tensor = torch.randn(total_size, device=self.device, dtype=torch.float32)
             output = torch.empty(per_rank_size, device=self.device, dtype=torch.float32)
-            
+
             size_mb = tensor.numel() * tensor.element_size() / (1024 * 1024)
-            
+
             # Warmup
             for _ in range(10):
-                output_list = [torch.empty(per_rank_size, device=self.device) 
-                              for _ in range(self.world_size)]
-                dist.reduce_scatter(output, output_list, op=dist.ReduceOp.SUM)
+                dist.reduce_scatter_tensor(output, tensor, op=dist.ReduceOp.SUM)
             torch.cuda.synchronize()
-            
-            # Benchmark
+
+            # Benchmark — no per-iteration allocation
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
-            
+
             times = []
             for _ in range(iterations):
-                output_list = [torch.empty(per_rank_size, device=self.device) 
-                              for _ in range(self.world_size)]
                 start.record()
-                dist.reduce_scatter(output, output_list, op=dist.ReduceOp.SUM)
+                dist.reduce_scatter_tensor(output, tensor, op=dist.ReduceOp.SUM)
                 end.record()
                 torch.cuda.synchronize()
                 times.append(start.elapsed_time(end))
-            
-            avg_time_ms = sum(times) / len(times)
-            std_time_ms = torch.tensor(times).std().item()
+
+            avg_time_ms, std_time_ms = _compute_stats(times)
             bandwidth_gbps = (size_mb / 1024) / (avg_time_ms / 1000)
-            
+
             results[f"{size_mb:.2f}MB"] = {
                 "avg_time_ms": avg_time_ms,
                 "std_time_ms": std_time_ms,
                 "bandwidth_gbps": bandwidth_gbps,
                 "size_elements": total_size,
             }
-            
+
             if self.rank == 0:
                 print(f"  Reduce-Scatter {size_mb:8.2f} MB: {avg_time_ms:7.3f} ± {std_time_ms:6.3f} ms, "
                       f"{bandwidth_gbps:6.2f} GB/s")
-        
+
         return results
-    
+
     def benchmark_broadcast(self, sizes: List[int], iterations: int = 100) -> Dict:
         """Benchmark broadcast operation."""
         results = {}
-        
+
         for size in sizes:
             tensor = torch.randn(size, device=self.device, dtype=torch.float32)
             size_mb = tensor.numel() * tensor.element_size() / (1024 * 1024)
-            
-            # Warmup
+
+            # Warmup — broadcast is in-place, no clone needed
             for _ in range(10):
-                dist.broadcast(tensor.clone(), src=0)
+                dist.broadcast(tensor, src=0)
             torch.cuda.synchronize()
-            
-            # Benchmark
+
+            # Benchmark — broadcast overwrites tensor in-place, no allocation needed
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
-            
+
             times = []
             for _ in range(iterations):
-                tensor_copy = tensor.clone()
                 start.record()
-                dist.broadcast(tensor_copy, src=0)
+                dist.broadcast(tensor, src=0)
                 end.record()
                 torch.cuda.synchronize()
                 times.append(start.elapsed_time(end))
-            
-            avg_time_ms = sum(times) / len(times)
-            std_time_ms = torch.tensor(times).std().item()
+
+            avg_time_ms, std_time_ms = _compute_stats(times)
             bandwidth_gbps = (size_mb / 1024) / (avg_time_ms / 1000)
-            
+
             results[f"{size_mb:.2f}MB"] = {
                 "avg_time_ms": avg_time_ms,
                 "std_time_ms": std_time_ms,
                 "bandwidth_gbps": bandwidth_gbps,
                 "size_elements": size,
             }
-            
+
             if self.rank == 0:
                 print(f"  Broadcast {size_mb:8.2f} MB: {avg_time_ms:7.3f} ± {std_time_ms:6.3f} ms, "
                       f"{bandwidth_gbps:6.2f} GB/s")
-        
+
         return results
-    
+
     def benchmark_p2p(self, sizes: List[int], iterations: int = 100) -> Dict:
         """Benchmark point-to-point send/recv."""
         results = {}
-        
+
         # Only rank 0 and 1 participate
         if self.rank >= 2:
             dist.barrier()
             return results
-        
+
         for size in sizes:
             tensor = torch.randn(size, device=self.device, dtype=torch.float32)
             size_mb = tensor.numel() * tensor.element_size() / (1024 * 1024)
-            
+
             # Warmup
             for _ in range(10):
                 if self.rank == 0:
@@ -238,11 +242,11 @@ class CommBenchmark:
                 elif self.rank == 1:
                     dist.recv(tensor, src=0)
             torch.cuda.synchronize()
-            
+
             # Benchmark
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
-            
+
             times = []
             for _ in range(iterations):
                 start.record()
@@ -253,9 +257,8 @@ class CommBenchmark:
                 end.record()
                 torch.cuda.synchronize()
                 times.append(start.elapsed_time(end))
-            
-            avg_time_ms = sum(times) / len(times)
-            std_time_ms = torch.tensor(times).std().item()
+
+            avg_time_ms, std_time_ms = _compute_stats(times)
             bandwidth_gbps = (size_mb / 1024) / (avg_time_ms / 1000)
             
             results[f"{size_mb:.2f}MB"] = {

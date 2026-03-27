@@ -1,0 +1,208 @@
+{
+  "timestamp": "2026-03-27T14:29:46.604946",
+  "world_size": 2,
+  "backend": "nccl",
+  "cuda_version": "12.4",
+  "pytorch_version": "2.5.1+cu124",
+  "gpu_name": "NVIDIA A100-SXM4-40GB",
+  "nccl_version": "(2, 21, 5)",
+  "deployment": "docker",
+  "results": {
+    "all_reduce": {
+      "0.00MB": {
+        "avg_time_ms": 0.04900408879750305,
+        "std_time_ms": 0.003657010616734624,
+        "bandwidth_gbps": 0.01946111722119897,
+        "size_elements": 256
+      },
+      "0.01MB": {
+        "avg_time_ms": 0.05511395554575655,
+        "std_time_ms": 0.00418865866959095,
+        "bandwidth_gbps": 0.1730368119948301,
+        "size_elements": 2560
+      },
+      "0.10MB": {
+        "avg_time_ms": 0.1315043554537826,
+        "std_time_ms": 0.004708792082965374,
+        "bandwidth_gbps": 0.7252035973374433,
+        "size_elements": 25600
+      },
+      "0.98MB": {
+        "avg_time_ms": 0.3552711115943061,
+        "std_time_ms": 0.011610999703407288,
+        "bandwidth_gbps": 2.6843564964417292,
+        "size_elements": 256000
+      },
+      "9.77MB": {
+        "avg_time_ms": 2.413203904363844,
+        "std_time_ms": 0.03335009142756462,
+        "bandwidth_gbps": 3.9519010999514053,
+        "size_elements": 2560000
+      },
+      "97.66MB": {
+        "avg_time_ms": 22.555477248297798,
+        "std_time_ms": 0.20400093495845795,
+        "bandwidth_gbps": 4.228127411838388,
+        "size_elements": 25600000
+      }
+    },
+    "all_gather": {
+      "0.00MB": {
+        "avg_time_ms": 0.044077510800626545,
+        "std_time_ms": 0.0037377893459051847,
+        "bandwidth_gbps": 0.04327260315220404,
+        "size_elements": 256,
+        "total_size_mb": 0.001953125
+      },
+      "0.01MB": {
+        "avg_time_ms": 0.05848177890810702,
+        "std_time_ms": 0.014627615921199322,
+        "bandwidth_gbps": 0.3261440859741177,
+        "size_elements": 2560,
+        "total_size_mb": 0.01953125
+      },
+      "0.10MB": {
+        "avg_time_ms": 0.1141077347099781,
+        "std_time_ms": 0.0027675481978803873,
+        "bandwidth_gbps": 1.6715331678963852,
+        "size_elements": 25600,
+        "total_size_mb": 0.1953125
+      },
+      "0.98MB": {
+        "avg_time_ms": 0.3462826669216156,
+        "std_time_ms": 0.008292417973279953,
+        "bandwidth_gbps": 5.508068451038719,
+        "size_elements": 256000,
+        "total_size_mb": 1.953125
+      },
+      "9.77MB": {
+        "avg_time_ms": 2.4562460475497776,
+        "std_time_ms": 0.05007877200841904,
+        "bandwidth_gbps": 7.765299550161806,
+        "size_elements": 2560000,
+        "total_size_mb": 19.53125
+      },
+      "97.66MB": {
+        "avg_time_ms": 22.450267050001358,
+        "std_time_ms": 0.31044748425483704,
+        "bandwidth_gbps": 8.495883940108342,
+        "size_elements": 25600000,
+        "total_size_mb": 195.3125
+      }
+    },
+    "reduce_scatter": {
+      "0.00MB": {
+        "avg_time_ms": 0.03541902210563421,
+        "std_time_ms": 0.007831559516489506,
+        "bandwidth_gbps": 0.026925484096144658,
+        "size_elements": 256
+      },
+      "0.01MB": {
+        "avg_time_ms": 0.03860480044451025,
+        "std_time_ms": 0.009131171740591526,
+        "bandwidth_gbps": 0.24703516283604213,
+        "size_elements": 2560
+      },
+      "0.10MB": {
+        "avg_time_ms": 0.08470755442976952,
+        "std_time_ms": 0.0024126425851136446,
+        "bandwidth_gbps": 1.1258432885073257,
+        "size_elements": 25600
+      },
+      "0.98MB": {
+        "avg_time_ms": 0.21584782302379607,
+        "std_time_ms": 0.0063374959863722324,
+        "bandwidth_gbps": 4.418271646414115,
+        "size_elements": 256000
+      },
+      "9.77MB": {
+        "avg_time_ms": 1.4070897764629788,
+        "std_time_ms": 0.06506969779729843,
+        "bandwidth_gbps": 6.777636596888042,
+        "size_elements": 2560000
+      },
+      "97.66MB": {
+        "avg_time_ms": 11.117351807488335,
+        "std_time_ms": 0.1775124967098236,
+        "bandwidth_gbps": 8.578250764394104,
+        "size_elements": 25600000
+      }
+    },
+    "broadcast": {
+      "0.00MB": {
+        "avg_time_ms": 0.025497600187857947,
+        "std_time_ms": 0.0013119882205501199,
+        "bandwidth_gbps": 0.03740251276119677,
+        "size_elements": 256
+      },
+      "0.01MB": {
+        "avg_time_ms": 0.025782044521636432,
+        "std_time_ms": 0.0013949269196018577,
+        "bandwidth_gbps": 0.3698986384132264,
+        "size_elements": 2560
+      },
+      "0.10MB": {
+        "avg_time_ms": 0.033746489137411115,
+        "std_time_ms": 0.0012462334707379341,
+        "bandwidth_gbps": 2.82599565401609,
+        "size_elements": 25600
+      },
+      "0.98MB": {
+        "avg_time_ms": 0.14299591018093957,
+        "std_time_ms": 0.008534761145710945,
+        "bandwidth_gbps": 6.669241904887491,
+        "size_elements": 256000
+      },
+      "9.77MB": {
+        "avg_time_ms": 1.6440661271413168,
+        "std_time_ms": 0.010693857446312904,
+        "bandwidth_gbps": 5.800705340633031,
+        "size_elements": 2560000
+      },
+      "97.66MB": {
+        "avg_time_ms": 16.58771906958686,
+        "std_time_ms": 0.07404707372188568,
+        "bandwidth_gbps": 5.749279406080528,
+        "size_elements": 25600000
+      }
+    },
+    "p2p": {
+      "0.00MB": {
+        "avg_time_ms": 0.02800071111155881,
+        "std_time_ms": 0.0014895523199811578,
+        "bandwidth_gbps": 0.03405893202521451,
+        "size_elements": 256
+      },
+      "0.01MB": {
+        "avg_time_ms": 0.02772764451801777,
+        "std_time_ms": 0.0008980684797279537,
+        "bandwidth_gbps": 0.34394350222808884,
+        "size_elements": 2560
+      },
+      "0.10MB": {
+        "avg_time_ms": 0.04110791020923191,
+        "std_time_ms": 0.001325489254668355,
+        "bandwidth_gbps": 2.3199289663527494,
+        "size_elements": 25600
+      },
+      "0.98MB": {
+        "avg_time_ms": 0.21228657878107496,
+        "std_time_ms": 0.0026438580825924873,
+        "bandwidth_gbps": 4.492391002210963,
+        "size_elements": 256000
+      },
+      "9.77MB": {
+        "avg_time_ms": 1.8720199094878303,
+        "std_time_ms": 0.016788573935627937,
+        "bandwidth_gbps": 5.0943599027596225,
+        "size_elements": 2560000
+      },
+      "97.66MB": {
+        "avg_time_ms": 18.67888641357422,
+        "std_time_ms": 0.08856163918972015,
+        "bandwidth_gbps": 5.10562725898478,
+        "size_elements": 25600000
+      }
+    }
+  }
+}

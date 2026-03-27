@@ -1,0 +1,64 @@
+# Baseline for node192: 2x A100-SXM4, NV12 (NVLink) topology
+# No isolation — host IPC, host network, all GPUs visible
+# This is the reference benchmark to compare against isolated configs.
+
+services:
+  rank0:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-node192-baseline-rank0
+    runtime: nvidia
+    network_mode: host
+    ipc: host
+    pid: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=2
+      - RANK=0
+      - MASTER_ADDR=127.0.0.1
+      - MASTER_PORT=29500
+      - OUTPUT_FILE=/results/node192_baseline.json
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - ../results:/results
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+
+  rank1:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-node192-baseline-rank1
+    runtime: nvidia
+    network_mode: host
+    ipc: host
+    pid: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=1
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=2
+      - RANK=1
+      - MASTER_ADDR=127.0.0.1
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]

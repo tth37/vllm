@@ -1,0 +1,85 @@
+# P2P Isolation for node192: 2x A100-SXM4, NV12 (NVLink) topology
+# Per-GPU CUDA isolation — test whether NCCL P2P transport survives isolation
+#
+# On node192, GPU0-GPU1 are connected via NV12 (12x NVLink).
+# Baseline (no isolation) should use P2P transport via CUDA IPC over NVLink.
+# This config tests if P2P still works with per-GPU container isolation.
+#
+# Key: NVIDIA_VISIBLE_DEVICES=all exposes all GPUs to NVML for topology discovery,
+# while CUDA_VISIBLE_DEVICES restricts each container to a single GPU.
+# P2P (CUDA IPC) should work because it goes through nvidia.ko, not POSIX IPC.
+
+services:
+  rank0:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-node192-p2p-rank0
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      - NCCL_HOSTID=exp2-node192
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=2
+      - RANK=0
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - OUTPUT_FILE=/results/node192_isolated_p2p.json
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - ../results:/results
+      - nccl-tmp:/tmp
+    networks:
+      - exp2-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+
+  rank1:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-node192-p2p-rank1
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=1
+      - NCCL_HOSTID=exp2-node192
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=2
+      - RANK=1
+      - MASTER_ADDR=rank0
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ../benchmark.py:/workspace/benchmark.py
+      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - nccl-tmp:/tmp
+    networks:
+      - exp2-net
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+
+networks:
+  exp2-net:
+    driver: bridge
+
+volumes:
+  nccl-tmp:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=200m
