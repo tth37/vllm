@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Experiment 2: NCCL Transport Under Per-GPU Container Isolation</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Times New Roman", "Nimbus Roman", Times, serif;
+      background: #fff;
+      color: #111;
+      line-height: 1.6;
+    }
+    main {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 32px 60px;
+    }
+    h1 {
+      font-size: 22px;
+      text-align: center;
+      margin: 0 0 4px;
+      line-height: 1.3;
+    }
+    .subtitle {
+      text-align: center;
+      font-size: 14px;
+      color: #444;
+      margin: 0 0 24px;
+    }
+    h2 {
+      font-size: 17px;
+      border-bottom: 1px solid #999;
+      padding-bottom: 4px;
+      margin: 28px 0 12px;
+    }
+    h3 {
+      font-size: 15px;
+      margin: 20px 0 8px;
+    }
+    p, li {
+      font-size: 14px;
+      margin: 0 0 10px;
+    }
+    ul, ol {
+      padding-left: 24px;
+    }
+    .figure {
+      margin: 16px 0;
+      text-align: center;
+    }
+    .figure img {
+      max-width: 100%;
+      border: 1px solid #ccc;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin: 12px 0;
+    }
+    th, td {
+      border: 1px solid #bbb;
+      padding: 5px 7px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f0f0f0;
+      font-weight: bold;
+    }
+    td {
+      font-variant-numeric: tabular-nums;
+    }
+    code {
+      font-family: "Courier New", Courier, monospace;
+      font-size: 13px;
+      background: #f5f5f5;
+      padding: 1px 4px;
+    }
+    .config-table {
+      width: auto;
+      margin: 12px 0;
+    }
+    .config-table td:first-child {
+      font-weight: bold;
+      white-space: nowrap;
+      padding-right: 16px;
+    }
+    hr.appendix {
+      border: none;
+      border-top: 2px solid #333;
+      margin: 36px 0 24px;
+    }
+    .diagram {
+      font-family: "Courier New", Courier, monospace;
+      font-size: 13px;
+      background: #fafafa;
+      border: 1px solid #ddd;
+      padding: 12px 16px;
+      margin: 12px 0;
+      white-space: pre;
+      overflow-x: auto;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Experiment 2: NCCL Transport Under Per-GPU Container Isolation</h1>
+    <p class="subtitle">
+      node192 &middot; 2&times; A100-SXM4-40GB &middot; NVLink NV12<br>
+      Generated 2026-03-28 09:02 UTC &middot; commit 25210c6cf
+    </p>
+
+    <h2>1. Objective</h2>
+    <p>Quantify the NCCL communication bandwidth loss when GPU workers run in
+       per-GPU isolated containers (one physical GPU per container, private IPC
+       and network namespaces) on NVLink-connected hardware. The experiment
+       tests whether environment-variable-only configurations can recover
+       NVLink P2P performance without code changes to NCCL.</p>
+
+    <h2>2. Background</h2>
+    <p>NCCL selects transport based on what the runtime environment makes available.
+       On NVLink-connected GPUs, the optimal path is <b>P2P/CUMEM/read</b>, which
+       performs direct GPU-to-GPU DMA over NVLink via CUDA IPC. Three barriers
+       prevent this under container isolation:</p>
+    <ol>
+      <li><b>Hostname mismatch</b> &mdash; containers have different hostnames, causing
+          NCCL to treat them as separate nodes. Solved with <code>NCCL_HOSTID</code>.</li>
+      <li><b>GPU topology invisible</b> &mdash; per-GPU <code>CUDA_VISIBLE_DEVICES</code>
+          hides the interconnect topology. Partially solved with
+          <code>NVIDIA_VISIBLE_DEVICES=all</code> (NVML can see topology).</li>
+      <li><b>CUDA peer access impossible</b> &mdash; each container sees only one GPU as
+          <code>cuda:0</code>. <code>cudaDeviceCanAccessPeer()</code> fails because
+          there is no peer device. <b>This cannot be solved with environment variables.</b></li>
+    </ol>
+
+    <h2>3. Configurations Under Test</h2>
+    <p>Three Docker Compose configurations test the isolation spectrum on node192
+       (GPU 0 and GPU 1, connected via 12&times; NVLink).</p>
+    <table>
+      <thead>
+        <tr><th>Configuration</th><th>GPU Visibility</th><th>IPC</th>
+            <th>Network</th><th>Shared Volumes</th>
+            <th>NCCL Transport</th><th>NCCL Env</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span style="display:inline-block;width:10px;height:10px;background:#2c2c2c;border:1px solid #999;margin-right:5px;vertical-align:middle"></span><b>Baseline (P2P/NVLink)</b></td><td>All GPUs per container</td><td>Host</td><td>Host</td><td>None</td><td>P2P/CUMEM/read</td><td><code>Default</code></td></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#4c72b0;border:1px solid #999;margin-right:5px;vertical-align:middle"></span><b>SHM Isolation</b></td><td>1 GPU per container (CUDA), all (NVML)</td><td>Private</td><td>Bridge</td><td>/dev/shm (4 GB), /tmp (200 MB)</td><td>SHM/direct/direct</td><td><code>NCCL_P2P_DISABLE=1, NCCL_HOSTID, NCCL_NET_DISABLE_INTRA=1</code></td></tr>
+<tr><td><span style="display:inline-block;width:10px;height:10px;background:#c44e52;border:1px solid #999;margin-right:5px;vertical-align:middle"></span><b>Naive Isolation (TCP)</b></td><td>1 GPU per container (CUDA), all (NVML)</td><td>Private</td><td>Bridge</td><td>/tmp (200 MB)</td><td>NET/Socket</td><td><code>NCCL_HOSTID only</code></td></tr>
+
+      </tbody>
+    </table>
+
+    <div class="diagram">+-----------------+     +-----------------+
+|  Container 0    |     |  Container 1    |
+|  cuda:0 = GPU0  |     |  cuda:0 = GPU1  |
+|  (no peer GPU)  |     |  (no peer GPU)  |
++--------+--------+     +--------+--------+
+         |                       |
+         |   NVLink (unused!)    |
+    GPU0 ===================== GPU1
+         |                       |
+    +----+---------------------------+----+
+    |         Host Memory (DRAM)          |
+    |     Shared /dev/shm (tmpfs)         |
+    |   &lt;- SHM transport goes here -&gt;    |
+    +-------------------------------------+</div>
+    <p style="font-size:12px;color:#666;text-align:center">
+      Figure: Per-GPU container isolation forces data through host DRAM (SHM)
+      instead of the direct NVLink path.</p>
+
+    <h2>4. Experimental Setup</h2>
+    <table class="config-table">
+      <tr><td>Machine</td><td>node192 (10.0.2.192)</td></tr>
+      <tr><td>GPUs</td><td>2&times; NVIDIA A100-SXM4-40GB (GPU 0, GPU 1)</td></tr>
+      <tr><td>GPU Interconnect</td><td>NV12 (12&times; NVLink, ~600 GB/s bidirectional)</td></tr>
+      <tr><td>NCCL</td><td>2.21.5 (bundled with PyTorch 2.5.1+cu124)</td></tr>
+      <tr><td>CUDA</td><td>12.4</td></tr>
+      <tr><td>Docker</td><td>27.3.1 with nvidia runtime</td></tr>
+      <tr><td>Benchmark</td><td>Custom PyTorch NCCL benchmark (all-reduce, all-gather, reduce-scatter, broadcast, P2P)</td></tr>
+      <tr><td>Message sizes</td><td>1 KB &ndash; 100 MB (6 sizes, log-spaced)</td></tr>
+      <tr><td>Timing</td><td>CUDA events, trimmed mean (drop top/bottom 5%)</td></tr>
+    </table>
+
+    <h2>5. Results</h2>
+
+    <h3>5.1 Bandwidth at 100 MB</h3>
+    <table>
+      <thead>
+        <tr><th>Operation</th>
+            <th><span style="display:inline-block;width:10px;height:10px;background:#2c2c2c;border:1px solid #999;margin-right:5px;vertical-align:middle"></span>Baseline (GB/s)</th>
+            <th><span style="display:inline-block;width:10px;height:10px;background:#4c72b0;border:1px solid #999;margin-right:5px;vertical-align:middle"></span>SHM Isolation (GB/s)</th>
+            <th><span style="display:inline-block;width:10px;height:10px;background:#c44e52;border:1px solid #999;margin-right:5px;vertical-align:middle"></span>Naive TCP (GB/s)</th>
+            <th>SHM / Baseline</th>
+            <th>TCP / Baseline</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>All-Reduce</td><td>156.64</td><td>13.34</td><td>4.23</td><td><b>8.5%</b></td><td><b>2.7%</b></td></tr>
+<tr><td>All-Gather</td><td>174.85</td><td>22.80</td><td>8.50</td><td><b>13.0%</b></td><td><b>4.9%</b></td></tr>
+<tr><td>Reduce-Scatter</td><td>260.78</td><td>23.21</td><td>8.58</td><td><b>8.9%</b></td><td><b>3.3%</b></td></tr>
+<tr><td>Broadcast</td><td>218.65</td><td>23.29</td><td>5.75</td><td><b>10.7%</b></td><td><b>2.6%</b></td></tr>
+<tr><td>P2P Send/Recv</td><td>219.28</td><td>22.06</td><td>5.11</td><td><b>10.1%</b></td><td><b>2.3%</b></td></tr>
+
+      </tbody>
+    </table>
+
+    
+      <div class="figure">
+        <img src="analysis_assets/bandwidth_100mb_bars.png" alt="Bandwidth at 100 MB">
+      </div>
+
+    <h3>5.2 Bandwidth vs Message Size</h3>
+    
+      <div class="figure">
+        <img src="analysis_assets/bandwidth_vs_size.png" alt="Bandwidth vs message size">
+      </div>
+
+    <h3>5.3 Degradation Under Isolation</h3>
+    
+      <div class="figure">
+        <img src="analysis_assets/degradation_100mb.png" alt="Bandwidth retained under isolation">
+      </div>
+
+    <h3>5.4 Latency at 100 MB</h3>
+    
+      <div class="figure">
+        <img src="analysis_assets/latency_100mb_bars.png" alt="Latency at 100 MB">
+      </div>
+
+    <h2>6. Analysis</h2>
+
+    <h3>6.1 Environment variables alone cannot restore NVLink P2P</h3>
+    <p>The fundamental barrier is <code>cudaDeviceCanAccessPeer()</code>: with per-GPU
+       <code>CUDA_VISIBLE_DEVICES</code>, each container sees only <code>cuda:0</code>.
+       There is no peer device to check, so NCCL&rsquo;s P2P transport selection
+       (<code>p2pCanConnect</code>) fails unconditionally. No combination of
+       <code>NCCL_HOSTID</code>, <code>NVIDIA_VISIBLE_DEVICES</code>, or other
+       environment variables can change this &mdash; it is a CUDA runtime constraint.</p>
+
+    <h3>6.2 SHM is the best achievable fallback without code changes</h3>
+    <p>By sharing <code>/dev/shm</code> and <code>/tmp</code> as Docker volumes and
+       setting <code>NCCL_P2P_DISABLE=1</code> + <code>NCCL_HOSTID</code>, NCCL selects
+       SHM/direct/direct transport. This routes data through host DRAM (CPU memory),
+       achieving 13&ndash;23 GB/s &mdash; about <b>9&ndash;12% of the NVLink P2P baseline</b>
+       (157&ndash;261 GB/s). While substantially better than the naive TCP fallback
+       (4&ndash;9 GB/s), it still represents a <b>~7&ndash;12&times; degradation</b>.</p>
+
+    <h3>6.3 Without SHM workaround, NCCL falls to TCP sockets</h3>
+    <p>The naive isolation config (no shared <code>/dev/shm</code>, no
+       <code>NCCL_P2P_DISABLE</code>) causes NCCL to detect <code>nNodes=2</code>
+       and fall back to NET/Socket transport over the Docker bridge network. This
+       achieves only 2&ndash;5% of baseline bandwidth. The SHM workaround provides
+       a <b>3&ndash;4&times; improvement</b> over this TCP baseline.</p>
+
+    <h3>6.4 The penalty is architectural, not configurational</h3>
+    <p>NVLink P2P transport requires CUDA IPC (<code>cudaIpcGetMemHandle</code> /
+       <code>cudaIpcOpenMemHandle</code>), which requires both GPUs to be visible in
+       the same CUDA context. Per-GPU container isolation makes this impossible by
+       design. Recovering NVLink performance would require one of:</p>
+    <ol>
+      <li>Patching NCCL to use <code>pidfd_getfd()</code> (kernel 5.6+) for
+          cross-namespace CUDA IPC file descriptor passing</li>
+      <li>Using the CUDA VMM API (<code>cuMemExportToShareableHandle</code> with
+          <code>CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR</code>) to export GPU memory
+          as POSIX FDs shareable via Unix domain sockets</li>
+      <li>Giving each container visibility to all GPUs (defeats isolation)</li>
+    </ol>
+
+    <h2>7. Conclusions</h2>
+    <ol>
+      <li>Per-GPU container isolation on NVLink hardware causes an <b>88&ndash;91%
+          NCCL bandwidth loss</b> compared to the P2P/NVLink baseline. This is a
+          fundamental CUDA runtime constraint, not a configuration problem.</li>
+      <li>The best environment-variable-only workaround (shared <code>/dev/shm</code>
+          + NCCL SHM transport) recovers to ~10% of baseline, achieving 13&ndash;23 GB/s
+          through host DRAM.</li>
+      <li>Without the SHM workaround, NCCL falls back to TCP sockets at 2&ndash;5%
+          of baseline (4&ndash;9 GB/s).</li>
+      <li>Restoring NVLink P2P performance under per-GPU isolation requires NCCL
+          source-level modifications to enable cross-container CUDA IPC.</li>
+    </ol>
+
+    <hr class="appendix">
+
+    <h2>Appendix A: Full Bandwidth Tables</h2>
+    <p>Complete bandwidth measurements (GB/s) across all message sizes and operations.</p>
+
+    
+      <h3><span style="display:inline-block;width:10px;height:10px;background:#2c2c2c;border:1px solid #999;margin-right:5px;vertical-align:middle"></span>Baseline (P2P/NVLink) &mdash; P2P/CUMEM/read</h3>
+      <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Size</th><th>All-Reduce</th><th>All-Gather</th><th>Reduce-Scatter</th><th>Broadcast</th><th>P2P</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1 KB</td><td>0.04</td><td>0.05</td><td>0.04</td><td>0.04</td><td>0.04</td></tr>
+<tr><td>10 KB</td><td>0.38</td><td>0.50</td><td>0.43</td><td>0.44</td><td>0.44</td></tr>
+<tr><td>100 KB</td><td>3.87</td><td>4.86</td><td>4.11</td><td>4.17</td><td>3.90</td></tr>
+<tr><td>1 MB</td><td>19.32</td><td>32.56</td><td>32.34</td><td>28.30</td><td>35.26</td></tr>
+<tr><td>10 MB</td><td>97.38</td><td>119.43</td><td>136.60</td><td>143.99</td><td>148.19</td></tr>
+<tr><td>100 MB</td><td>156.64</td><td>174.85</td><td>260.78</td><td>218.65</td><td>219.28</td></tr>
+
+        </tbody>
+      </table>
+      </div>
+      <p style="font-size:12px;color:#666">All values in GB/s.</p>
+
+      <h3><span style="display:inline-block;width:10px;height:10px;background:#4c72b0;border:1px solid #999;margin-right:5px;vertical-align:middle"></span>SHM Isolation &mdash; SHM/direct/direct</h3>
+      <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Size</th><th>All-Reduce</th><th>All-Gather</th><th>Reduce-Scatter</th><th>Broadcast</th><th>P2P</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1 KB</td><td>0.04</td><td>0.05</td><td>0.04</td><td>0.05</td><td>0.04</td></tr>
+<tr><td>10 KB</td><td>0.37</td><td>0.51</td><td>0.40</td><td>0.45</td><td>0.45</td></tr>
+<tr><td>100 KB</td><td>2.02</td><td>3.31</td><td>2.50</td><td>2.77</td><td>3.82</td></tr>
+<tr><td>1 MB</td><td>8.00</td><td>14.86</td><td>11.72</td><td>13.73</td><td>11.44</td></tr>
+<tr><td>10 MB</td><td>12.54</td><td>21.67</td><td>21.40</td><td>22.01</td><td>21.05</td></tr>
+<tr><td>100 MB</td><td>13.34</td><td>22.80</td><td>23.21</td><td>23.29</td><td>22.06</td></tr>
+
+        </tbody>
+      </table>
+      </div>
+      <p style="font-size:12px;color:#666">All values in GB/s.</p>
+
+      <h3><span style="display:inline-block;width:10px;height:10px;background:#c44e52;border:1px solid #999;margin-right:5px;vertical-align:middle"></span>Naive Isolation (TCP) &mdash; NET/Socket</h3>
+      <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Size</th><th>All-Reduce</th><th>All-Gather</th><th>Reduce-Scatter</th><th>Broadcast</th><th>P2P</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1 KB</td><td>0.02</td><td>0.04</td><td>0.03</td><td>0.04</td><td>0.03</td></tr>
+<tr><td>10 KB</td><td>0.17</td><td>0.33</td><td>0.25</td><td>0.37</td><td>0.34</td></tr>
+<tr><td>100 KB</td><td>0.73</td><td>1.67</td><td>1.13</td><td>2.83</td><td>2.32</td></tr>
+<tr><td>1 MB</td><td>2.68</td><td>5.51</td><td>4.42</td><td>6.67</td><td>4.49</td></tr>
+<tr><td>10 MB</td><td>3.95</td><td>7.77</td><td>6.78</td><td>5.80</td><td>5.09</td></tr>
+<tr><td>100 MB</td><td>4.23</td><td>8.50</td><td>8.58</td><td>5.75</td><td>5.11</td></tr>
+
+        </tbody>
+      </table>
+      </div>
+      <p style="font-size:12px;color:#666">All values in GB/s.</p>
+
+
+  </main>
+</body>
+</html>
