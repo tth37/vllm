@@ -1,0 +1,89 @@
+# CUMEM Isolation for node192: 2x A100-SXM4, NV12 (NVLink) topology
+# Per-GPU CUDA isolation + NCCL CUMEM (VMM API) + shared network namespace
+#
+# Hypothesis: NCCL's cuMem VMM path can share GPU memory across containers
+# via POSIX file descriptors passed over Unix domain sockets (SCM_RIGHTS).
+# With CUMEM enabled and P2P NOT disabled, NCCL should select P2P/CUMEM
+# transport and use the NVLink data path — recovering baseline bandwidth.
+#
+# Key insight: NCCL uses abstract Unix domain sockets (bound to network
+# namespace) for IPC socket FD passing. Containers must share a network
+# namespace for the CUMEM proxy UDS to work across containers.
+#
+# Isolation preserved:
+#   - Separate PID namespaces (processes invisible across containers)
+#   - Separate mount namespaces (filesystems isolated)
+#   - Separate IPC namespaces (SysV IPC isolated)
+#   - Per-GPU CUDA_VISIBLE_DEVICES (GPU compute isolation)
+# Shared:
+#   - Network namespace (required for abstract UDS)
+#   - /dev/shm volume (for NCCL shmDev topology match)
+
+services:
+  rank0:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-node192-cumem-rank0
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      - NCCL_CUMEM_ENABLE=1
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=2
+      - RANK=0
+      - MASTER_ADDR=127.0.0.1
+      - MASTER_PORT=29500
+      - OUTPUT_FILE=/results/node192_cumem_isolation.json
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ./benchmark.py:/workspace/benchmark.py
+      - ./benchmark_docker.py:/workspace/benchmark_docker.py
+      - ./results:/results
+      - shared-shm:/dev/shm
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+
+  rank1:
+    image: gpu-comm-benchmark:latest
+    container_name: exp2-node192-cumem-rank1
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=1
+      - NCCL_CUMEM_ENABLE=1
+      - NCCL_DEBUG=INFO
+      - NCCL_DEBUG_SUBSYS=INIT,P2P,SHM,NET
+      - WORLD_SIZE=2
+      - RANK=1
+      - MASTER_ADDR=127.0.0.1
+      - MASTER_PORT=29500
+      - SMOKE_TEST=${SMOKE_TEST:-false}
+    volumes:
+      - ./benchmark.py:/workspace/benchmark.py
+      - ./benchmark_docker.py:/workspace/benchmark_docker.py
+      - shared-shm:/dev/shm
+    network_mode: host
+    depends_on:
+      - rank0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0', '1']
+              capabilities: [gpu]
+
+volumes:
+  shared-shm:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=4g

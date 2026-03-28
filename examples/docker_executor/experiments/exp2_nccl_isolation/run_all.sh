@@ -26,6 +26,7 @@ echo "==========================================================================
 
 CONFIGS=(
     "compose.baseline.yml:Baseline (no isolation, P2P/NVLink)"
+    "compose.cumem_isolation.yml:CUMEM Isolation (per-GPU + CUMEM P2P recovery)"
     "compose.shm_isolation.yml:SHM Isolation (per-GPU + shared /dev/shm)"
     "compose.p2p_isolation.yml:Naive Isolation (per-GPU, TCP fallback)"
 )

@@ -37,11 +37,12 @@ This experiment uses only GPU0-GPU1.
 
 ## Configurations
 
-Three Docker Compose configurations test the isolation spectrum:
+Four Docker Compose configurations test the isolation spectrum:
 
 | Config | File | GPU Visibility | IPC | Network | NCCL Transport |
 |--------|------|---------------|-----|---------|----------------|
 | **Baseline** | `compose.baseline.yml` | all GPUs | host | host | P2P/CUMEM/read (NVLink) |
+| **CUMEM Isolation** | `compose.cumem_isolation.yml` | all (NVML), 1 (CUDA) | private | host | P2P/CUMEM/read (NVLink) |
 | **SHM Isolation** | `compose.shm_isolation.yml` | all (NVML), 1 (CUDA) | private | bridge | SHM/direct/direct |
 | **Naive Isolation** | `compose.p2p_isolation.yml` | all (NVML), 1 (CUDA) | private | bridge | NET/Socket (TCP) |
 
@@ -50,6 +51,15 @@ Three Docker Compose configurations test the isolation spectrum:
 - `NVIDIA_VISIBLE_DEVICES=0,1` — both GPUs visible
 - `CUDA_VISIBLE_DEVICES=0` or `1` — per-rank GPU selection
 - No namespace isolation — CUDA IPC works natively, NCCL selects P2P
+
+### CUMEM Isolation (`compose.cumem_isolation.yml`) — **P2P Recovery**
+- `network_mode: host` — shared network namespace (for abstract UDS)
+- Private IPC and PID namespaces (isolation preserved)
+- `NVIDIA_VISIBLE_DEVICES=all` — NVML sees all GPUs for topology
+- `CUDA_VISIBLE_DEVICES=0` or `1` — per-container GPU isolation
+- `NCCL_CUMEM_ENABLE=1` — enables cuMem VMM API path
+- Shared `/dev/shm` (4 GB tmpfs) — for NCCL shmDev topology match
+- **Result: Full NVLink bandwidth recovery (99.5–100.1% of baseline)**
 
 ### SHM Isolation (`compose.shm_isolation.yml`)
 - Bridge network, private IPC namespace
@@ -69,13 +79,24 @@ Three Docker Compose configurations test the isolation spectrum:
 
 ### Bandwidth Comparison at 100 MB
 
-| Operation | Baseline (P2P) | SHM Isolation | Naive (Socket) | SHM vs Baseline |
-|-----------|----------------|---------------|----------------|-----------------|
-| All-Reduce | 156.64 GB/s | 13.34 GB/s | 4.23 GB/s | **-91.5%** |
-| All-Gather | 174.85 GB/s | 22.80 GB/s | 8.50 GB/s | **-87.0%** |
-| Reduce-Scatter | 260.78 GB/s | 23.21 GB/s | 8.58 GB/s | **-91.1%** |
-| Broadcast | 218.65 GB/s | 23.29 GB/s | 5.75 GB/s | **-89.3%** |
-| P2P Send/Recv | 219.28 GB/s | 22.06 GB/s | 5.11 GB/s | **-89.9%** |
+| Operation | Baseline (P2P) | CUMEM Isolation | SHM Isolation | Naive (Socket) | CUMEM vs Baseline |
+|-----------|----------------|-----------------|---------------|----------------|-------------------|
+| All-Reduce | 156.64 GB/s | **156.69 GB/s** | 13.34 GB/s | 4.23 GB/s | **100.0%** |
+| All-Gather | 174.85 GB/s | **174.96 GB/s** | 22.80 GB/s | 8.50 GB/s | **100.1%** |
+| Reduce-Scatter | 260.78 GB/s | **259.57 GB/s** | 23.21 GB/s | 8.58 GB/s | **99.5%** |
+| Broadcast | 218.65 GB/s | **217.92 GB/s** | 23.29 GB/s | 5.75 GB/s | **99.7%** |
+| P2P Send/Recv | 219.28 GB/s | **218.85 GB/s** | 22.06 GB/s | 5.11 GB/s | **99.8%** |
+
+### Full Size Sweep — CUMEM Isolation (P2P/CUMEM/read over NVLink, per-GPU containers)
+
+| Size | All-Reduce | All-Gather | Reduce-Scatter | Broadcast | P2P |
+|------|-----------|-----------|----------------|-----------|-----|
+| 1 KB | 0.04 GB/s | 0.05 GB/s | 0.04 GB/s | 0.04 GB/s | 0.04 GB/s |
+| 10 KB | 0.39 GB/s | 0.51 GB/s | 0.42 GB/s | 0.44 GB/s | 0.44 GB/s |
+| 100 KB | 3.76 GB/s | 4.89 GB/s | 4.12 GB/s | 4.19 GB/s | 3.88 GB/s |
+| 1 MB | 19.23 GB/s | 32.72 GB/s | 31.82 GB/s | 28.53 GB/s | 35.88 GB/s |
+| 10 MB | 98.31 GB/s | 119.90 GB/s | 134.13 GB/s | 142.02 GB/s | 148.14 GB/s |
+| 100 MB | 156.69 GB/s | 174.96 GB/s | 259.57 GB/s | 217.92 GB/s | 218.85 GB/s |
 
 ### Full Size Sweep — Baseline (P2P/CUMEM/read over NVLink)
 
@@ -112,53 +133,52 @@ Three Docker Compose configurations test the isolation spectrum:
 
 ## Analysis
 
-### Why P2P Breaks with Per-GPU Containers
+### Why P2P Breaks with Per-GPU Containers (Without CUMEM)
 
-NCCL's P2P transport uses **CUDA IPC** (`cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle`) to share GPU memory between processes. For P2P to work, the transport selection code (`p2pCanConnect`) checks:
+NCCL's standard P2P transport uses **CUDA IPC** (`cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle`) to share GPU memory between processes. With per-GPU container isolation (`CUDA_VISIBLE_DEVICES=0` in one container, `CUDA_VISIBLE_DEVICES=1` in the other), each container only sees **one GPU** as `cuda:0`. The peer GPU is not visible to CUDA, so `cudaDeviceCanAccessPeer` fails. Without the CUMEM path, this forces fallback to SHM (host memory) or TCP sockets.
 
-1. Both ranks are on the same node (`sameNode`)
-2. `cudaDeviceCanAccessPeer(myGpu, peerGpu)` returns true
+### How CUMEM Recovers NVLink P2P
 
-With per-GPU container isolation (`CUDA_VISIBLE_DEVICES=0` in one container, `CUDA_VISIBLE_DEVICES=1` in the other), each container only sees **one GPU** as `cuda:0`. The peer GPU is not visible to CUDA, so `cudaDeviceCanAccessPeer` fails — there is no peer to check.
+NCCL's cuMem VMM API path (`NCCL_CUMEM_ENABLE=1`) bypasses `cudaDeviceCanAccessPeer()` entirely:
 
-Even though `NVIDIA_VISIBLE_DEVICES=all` makes both GPUs visible to NVML (for topology discovery), CUDA runtime isolation prevents the P2P data path.
+1. **Transport selection**: `p2pCanConnect()` checks `shmDev` (shared `/dev/shm`) and `hostHash` (same hostname via host networking) — both match. `busIdToCudaDev()` returns -1 for the peer GPU, but with CUDA ≥10.1, the code returns without disabling P2P. `cudaDeviceCanAccessPeer()` is **never reached**.
 
-```
-+-----------------+     +-----------------+
-|  Container 0    |     |  Container 1    |
-|  cuda:0 = GPU0  |     |  cuda:0 = GPU1  |
-|  (no peer GPU)  |     |  (no peer GPU)  |
-+--------+--------+     +--------+--------+
-         |                       |
-         |   NVLink (unused!)    |
-    GPU0 ===================== GPU1
-         |                       |
-    +----+---------------------------+----+
-    |         Host Memory (DRAM)          |
-    |     Shared /dev/shm (tmpfs)         |
-    |    <- SHM transport goes here ->    |
-    +-------------------------------------+
-```
+2. **Memory export**: `cuMemCreate` allocates GPU memory, then `cuMemExportToShareableHandle(CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR)` exports it as a POSIX file descriptor.
+
+3. **FD passing**: The FD is sent to the peer container's NCCL proxy via `sendmsg()` with `SCM_RIGHTS` over an abstract Unix domain socket (requires shared network namespace).
+
+4. **Memory import**: The peer calls `cuMemImportFromShareableHandle` → `cuMemMap` → `cuMemSetAccess` to map the remote GPU memory. The NVIDIA driver resolves the physical NVLink path for DMA.
 
 ### Performance Summary
 
 | Scenario | Transport | 100 MB Bandwidth | Relative |
 |----------|-----------|------------------|----------|
 | Baseline (no isolation) | P2P/CUMEM/read (NVLink) | 157-261 GB/s | 100% |
-| Best isolation (SHM) | SHM/direct/direct (host memory) | 13-23 GB/s | **~9-12%** |
-| Naive isolation | NET/Socket (TCP) | 4-9 GB/s | **~2-5%** |
+| **CUMEM Isolation** | **P2P/CUMEM/read (NVLink)** | **157-260 GB/s** | **99.5-100.1%** |
+| SHM Isolation | SHM/direct/direct (host memory) | 13-23 GB/s | ~9-12% |
+| Naive isolation | NET/Socket (TCP) | 4-9 GB/s | ~2-5% |
 
-The SHM workaround recovers from ~3% (Socket) to ~10% (SHM) of baseline bandwidth. This still represents a **~7-12x degradation** compared to NVLink P2P — a fundamental architectural limitation, not a configuration problem.
+### Required Configuration for CUMEM Recovery
 
-### Potential Recovery Paths
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `NCCL_CUMEM_ENABLE` | `1` | Enable cuMem VMM API path |
+| `NVIDIA_VISIBLE_DEVICES` | `all` | NVML topology discovery |
+| `CUDA_VISIBLE_DEVICES` | `0` or `1` | Per-container GPU isolation |
+| `network_mode` | `host` | Shared network namespace for abstract UDS |
+| Shared `/dev/shm` | 4 GB tmpfs | NCCL shmDev match (same-node detection) |
 
-To preserve NVLink performance with per-GPU container isolation:
+### Isolation Properties
 
-1. **Cross-namespace CUDA IPC via `pidfd_getfd()`** (kernel 5.6+) — pass CUDA IPC file descriptors across PID namespaces. Requires NCCL P2P transport patch.
-2. **CUDA VMM API** (`cuMemExportToShareableHandle` with `CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR`) — export GPU memory as POSIX FDs that can be shared via Unix domain sockets on a shared volume.
-3. **NCCL NVLS** (NVLink SHARP) — hardware-accelerated multicast over NVLink, but requires multi-GPU visibility per container.
+| Namespace | Baseline | CUMEM Isolation | SHM Isolation |
+|-----------|----------|-----------------|---------------|
+| PID | Host (shared) | **Private** | Private |
+| IPC | Host (shared) | **Private** | Private |
+| Mount | Host (shared) | **Private** | Private |
+| Network | Host | Host | Bridge (private) |
+| GPU (CUDA) | All visible | **1 per container** | 1 per container |
 
-The `compose.patched_nccl.yml`, `build_nccl.sh`, `Dockerfile.nccl-dev`, and `patches/` directory provide the scaffold for testing custom NCCL builds with these approaches.
+CUMEM isolation provides stronger isolation than the baseline (private PID, IPC, mount namespaces) while maintaining full NVLink bandwidth.
 
 ## Quick Start
 
