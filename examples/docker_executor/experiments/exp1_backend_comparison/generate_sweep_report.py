@@ -98,7 +98,7 @@ NODES = [
     {
         "key": "node196",
         "label": "node196 (A100-PCIE, PCIe only)",
-        "gpu_info": "2x A100-PCIE-40GB, GPU 1,2, PCIe 4.0",
+        "gpu_info": "4x A100-PCIE-40GB, GPU 0,1,2,3, PCIe 4.0",
         "dir": "node196",
         "tp_sizes": [1, 2, 4],
         "variants": [
@@ -356,25 +356,29 @@ def plot_absolute_metric(
     offsets = variant_offsets(len(variants))
     record_map = records_by_key(records)
 
+    # Use all models for consistent x-axis across subplots
+    all_model_labels = [label for _, label in MODELS]
+    all_model_slugs = [slug for slug, _ in MODELS]
+    all_centers = list(range(len(MODELS)))
+
     for ax, tp_size in zip(axes[0], tp_sizes):
-        models = available[tp_size]
-        model_labels = [label for _, label in models]
-        centers = list(range(len(models)))
+        available_slugs = {s for s, _ in available[tp_size]}
         ax.set_axisbelow(True)
 
         for offset, variant in zip(offsets, variants):
-            values = [
-                record_map[(ms, tp_size, variant["key"])].metrics[metric_name]
-                for ms, _ in models
-            ]
-            positions = [c + offset * width for c in centers]
+            values = []
+            positions = []
+            for i, ms in enumerate(all_model_slugs):
+                if ms in available_slugs and (ms, tp_size, variant["key"]) in record_map:
+                    values.append(record_map[(ms, tp_size, variant["key"])].metrics[metric_name])
+                    positions.append(all_centers[i] + offset * width)
             bars = ax.bar(positions, values, width=width, label=variant["label"],
                           color=variant["color"], edgecolor="#333", linewidth=0.5)
             annotate_bars(ax, list(bars), precision)
 
         ax.set_title(f"TP={tp_size}", fontsize=12)
-        ax.set_xticks(centers)
-        ax.set_xticklabels(model_labels)
+        ax.set_xticks(all_centers)
+        ax.set_xticklabels(all_model_labels)
         ax.set_ylabel(ylabel)
         ymin, ymax = ax.get_ylim()
         ax.set_ylim(ymin, ymax * 1.15)
@@ -412,32 +416,33 @@ def plot_deltas(
         ("output_token_throughput_tps", "Throughput delta vs baseline (tok/s)", 1, 1),
     ]
 
+    all_model_labels = [label for _, label in MODELS]
+    all_model_slugs = [slug for slug, _ in MODELS]
+    all_centers = list(range(len(MODELS)))
+
     for col, tp_size in enumerate(tp_sizes):
-        models = available[tp_size]
-        model_labels = [label for _, label in models]
-        centers = list(range(len(models)))
+        available_slugs = {s for s, _ in available[tp_size]}
         for metric_name, ylabel, row, precision in plot_specs:
             ax = axes[row][col]
             ax.set_axisbelow(True)
-            baselines = [
-                record_map[(ms, tp_size, "baseline")].metrics[metric_name]
-                for ms, _ in models
-            ]
 
             for offset, variant in zip(offsets, delta_variants):
-                values = [
-                    record_map[(ms, tp_size, variant["key"])].metrics[metric_name] - baselines[i]
-                    for i, (ms, _) in enumerate(models)
-                ]
-                positions = [c + offset * width for c in centers]
+                values = []
+                positions = []
+                for i, ms in enumerate(all_model_slugs):
+                    if ms in available_slugs and (ms, tp_size, variant["key"]) in record_map:
+                        bl = record_map[(ms, tp_size, "baseline")].metrics[metric_name]
+                        val = record_map[(ms, tp_size, variant["key"])].metrics[metric_name] - bl
+                        values.append(val)
+                        positions.append(all_centers[i] + offset * width)
                 bars = ax.bar(positions, values, width=width, label=variant["label"],
                               color=variant["color"], edgecolor="#333", linewidth=0.5)
                 annotate_bars(ax, list(bars), precision)
 
             ax.axhline(0.0, color="#333", linewidth=0.8)
             ax.set_title(f"TP={tp_size}", fontsize=12)
-            ax.set_xticks(centers)
-            ax.set_xticklabels(model_labels)
+            ax.set_xticks(all_centers)
+            ax.set_xticklabels(all_model_labels)
             ax.set_ylabel(ylabel)
             ymin, ymax = ax.get_ylim()
             span = ymax - ymin
