@@ -1,0 +1,77 @@
+================================================================
+  Experiment 1 DockerBE Sync-Output Ablation Report
+  Generated: 2026-03-19 01:10:11 UTC
+  Git branch: main
+  Git commit: 2bad5bb1a
+  Model: Qwen/Qwen3-4B
+  GPUs: CUDA_VISIBLE_DEVICES=1,2
+  Dataset: ShareGPT first 1000 prompts (/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json)
+  Benchmark: rate=10 req/s, 3 warmups, --ignore-eos
+  Experiment branch: exp1/dockerbe_sync_output
+  Docker image: tth37/vllm-docker-executor:exp1-dockerbe_sync_output
+================================================================
+
+Run note:
+  Host vLLM runs from the local source tree with DockerDistributedExecutor, full SHM RPC, and VLLM_DOCKER_ASYNC_OUTPUT_COPY=0.
+
+Optimization set:
+  DockerDistributedExecutor on the host, SHM broadcast MQ, SHM worker response MQ, and VLLM_DOCKER_ASYNC_OUTPUT_COPY=0.
+
+── 5_host_dockerbe_tp1 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     700       
+Failed requests:                         300       
+Benchmark duration (s):                  103.45    
+Request throughput (req/s):              6.77      
+Output token throughput (tok/s):         1059.34   
+Peak concurrent requests:                61.00     
+Mean TTFT (ms):                          266.92    
+Median TTFT (ms):                        33.16     
+P99 TTFT (ms):                           5435.71   
+Mean TPOT (ms):                          11.11     
+Median TPOT (ms):                        9.95      
+P99 TPOT (ms):                           35.19     
+Mean ITL (ms):                           10.55     
+Median ITL (ms):                         9.68      
+P99 ITL (ms):                            21.47     
+
+── 6_host_dockerbe_tp2 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     700       
+Failed requests:                         300       
+Benchmark duration (s):                  102.36    
+Request throughput (req/s):              6.84      
+Output token throughput (tok/s):         1070.55   
+Peak concurrent requests:                67.00     
+Mean TTFT (ms):                          289.16    
+Median TTFT (ms):                        27.49     
+P99 TTFT (ms):                           5778.48   
+Mean TPOT (ms):                          8.89      
+Median TPOT (ms):                        7.75      
+P99 TPOT (ms):                           34.47     
+Mean ITL (ms):                           8.35      
+Median ITL (ms):                         7.55      
+P99 ITL (ms):                            20.87     
+
+── 7_host_dockerbe_tp4 ──
+Promoted note:
+  This TP=4 run was promoted from the archived node196 partial sweep because the run itself completed successfully for all qwen3_4b variants even though the larger model sweep later failed at qwen3_8b startup.
+  Source archive: archive/node196_partial_20260324/.../scripts/dockerbe_sync_output/qwen3_4b
+  GPUs for this TP=4 run: CUDA_VISIBLE_DEVICES=0,1,2,3 on node196
+
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     700
+Failed requests:                         300
+Benchmark duration (s):                  102.93
+Request throughput (req/s):              6.80
+Output token throughput (tok/s):         1064.69
+Peak concurrent requests:                74.00
+Mean TTFT (ms):                          383.52
+Median TTFT (ms):                        39.90
+P99 TTFT (ms):                           6311.18
+Mean TPOT (ms):                          12.33
+Median TPOT (ms):                        10.08
+P99 TPOT (ms):                           54.24
+Mean ITL (ms):                           11.33
+Median ITL (ms):                         9.57
+P99 ITL (ms):                            33.71

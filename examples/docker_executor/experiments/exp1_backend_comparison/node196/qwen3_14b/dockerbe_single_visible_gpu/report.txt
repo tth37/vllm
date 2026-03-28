@@ -1,0 +1,55 @@
+================================================================
+  Experiment 1 DockerBE Single-Visible-GPU Baseline Report
+  Generated: 2026-03-25 07:44:56 UTC
+  Git branch: main
+  Git commit: a548ab902
+  Model: Qwen/Qwen3-14B
+  GPUs: CUDA_VISIBLE_DEVICES=0,1,2,3
+  Dataset: ShareGPT first 1000 prompts (/home/thd/repositories/vllm-dev/vllm-source/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json)
+  Benchmark: rate=10 req/s, 3 warmups, --ignore-eos
+  Experiment branch: exp1/dockerbe_single_visible_gpu
+  Docker image: tth37/vllm-docker-executor:exp1-dockerbe_single_visible_gpu
+================================================================
+
+Run note:
+  Host vLLM runs from the local source tree with DockerDistributedExecutor. Each worker container sees only one GPU and uses a private IPC namespace, so the run falls back to the inter-node communication path.
+
+Optimization set:
+  DockerDistributedExecutor on the host, one visible GPU per worker container, private IPC namespace, TCP broadcast MQ, TCP worker response MQ, and VLLM_DOCKER_ASYNC_OUTPUT_COPY=1.
+
+── 9_host_dockerbe_single_visible_gpu_tp2 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     700       
+Failed requests:                         300       
+Benchmark duration (s):                  116.39    
+Request throughput (req/s):              6.01      
+Output token throughput (tok/s):         941.49    
+Peak concurrent requests:                138.00    
+Mean TTFT (ms):                          642.58    
+Median TTFT (ms):                        308.14    
+P99 TTFT (ms):                           6211.30   
+Mean TPOT (ms):                          95.88     
+Median TPOT (ms):                        95.39     
+P99 TPOT (ms):                           173.19    
+Mean ITL (ms):                           91.04     
+Median ITL (ms):                         69.92     
+P99 ITL (ms):                            276.79    
+
+── 10_host_dockerbe_single_visible_gpu_tp4 ──
+Failed requests during benchmark run detected (capping to 10):
+Successful requests:                     700       
+Failed requests:                         300       
+Benchmark duration (s):                  149.28    
+Request throughput (req/s):              4.69      
+Output token throughput (tok/s):         734.10    
+Peak concurrent requests:                333.00    
+Mean TTFT (ms):                          3555.22   
+Median TTFT (ms):                        1072.73   
+P99 TTFT (ms):                           13013.16  
+Mean TPOT (ms):                          243.16    
+Median TPOT (ms):                        245.21    
+P99 TPOT (ms):                           470.20    
+Mean ITL (ms):                           225.60    
+Median ITL (ms):                         193.61    
+P99 ITL (ms):                            611.35    
+

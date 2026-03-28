@@ -43,6 +43,8 @@ RUN uv venv --python 3.12 --seed --managed-python
 # Using --torch-backend=auto to automatically select appropriate PyTorch CUDA version
 ENV VLLM_PRECOMPILED_WHEEL_COMMIT=ec13e549d3e1de13d05af759cc8bef3f7cf5e318
 ENV VLLM_USE_PRECOMPILED=1
+# When building without .git directory, setuptools-scm needs a pretend version
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.1.dev0
 RUN . .venv/bin/activate && \
     uv pip install --editable . --torch-backend=auto --index=https://pypi.tuna.tsinghua.edu.cn/simple/
 
