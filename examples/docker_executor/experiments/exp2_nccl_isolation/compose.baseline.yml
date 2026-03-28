@@ -22,9 +22,9 @@ services:
       - OUTPUT_FILE=/results/node192_baseline.json
       - SMOKE_TEST=${SMOKE_TEST:-false}
     volumes:
-      - ../benchmark.py:/workspace/benchmark.py
-      - ../benchmark_docker.py:/workspace/benchmark_docker.py
-      - ../results:/results
+      - ./benchmark.py:/workspace/benchmark.py
+      - ./benchmark_docker.py:/workspace/benchmark_docker.py
+      - ./results:/results
     deploy:
       resources:
         reservations:
@@ -51,8 +51,8 @@ services:
       - MASTER_PORT=29500
       - SMOKE_TEST=${SMOKE_TEST:-false}
     volumes:
-      - ../benchmark.py:/workspace/benchmark.py
-      - ../benchmark_docker.py:/workspace/benchmark_docker.py
+      - ./benchmark.py:/workspace/benchmark.py
+      - ./benchmark_docker.py:/workspace/benchmark_docker.py
     depends_on:
       - rank0
     deploy:

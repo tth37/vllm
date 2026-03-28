@@ -1,73 +1,56 @@
 #!/bin/bash
-# Exp2 Master Orchestrator
-# Runs Phase 1 and Phase 2 sequentially, then generates analysis report.
-# Phase 3 (NCCL patching) is manual — only run if Phases 1-2 are insufficient.
+# Exp2: Run all 3 NCCL isolation benchmarks on node192 (2x A100-SXM4, NVLink)
 #
 # Usage:
-#   ./run_all.sh [--smoke] [--rebuild] [--phase=1|2|3]
+#   ./run_all.sh [--smoke] [--rebuild]
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-SMOKE=""
+SMOKE_TEST="false"
 REBUILD=""
-ONLY_PHASE=""
 
 for arg in "$@"; do
     case $arg in
-        --smoke) SMOKE="--smoke" ;;
-        --rebuild) REBUILD="--rebuild" ;;
-        --phase=*) ONLY_PHASE="${arg#*=}" ;;
+        --smoke) SMOKE_TEST="true" ;;
+        --rebuild) REBUILD="--build" ;;
     esac
 done
 
 echo "=============================================================================="
-echo "  Exp2: NCCL High-Bandwidth Communication with Per-GPU Container Isolation"
+echo "  Exp2: NCCL Transport Under Per-GPU Container Isolation (NVLink)"
+echo "  Testbed: node192 — 2x A100-SXM4-40GB, NV12 (12x NVLink)"
 echo "=============================================================================="
-echo ""
 
-run_phase() {
-    local phase=$1
-    local script=$2
+CONFIGS=(
+    "compose.baseline.yml:Baseline (no isolation, P2P/NVLink)"
+    "compose.shm_isolation.yml:SHM Isolation (per-GPU + shared /dev/shm)"
+    "compose.p2p_isolation.yml:Naive Isolation (per-GPU, TCP fallback)"
+)
+
+for entry in "${CONFIGS[@]}"; do
+    IFS=: read -r compose_file description <<< "$entry"
 
     echo ""
     echo "======================================================================"
-    echo "  Running Phase $phase"
+    echo "  $description"
+    echo "  Config: $compose_file"
     echo "======================================================================"
 
-    chmod +x "$script"
-    bash "$script" $SMOKE $REBUILD
-}
+    SMOKE_TEST="$SMOKE_TEST" docker compose -f "$compose_file" up \
+        --abort-on-container-exit $REBUILD 2>&1
 
-# Phase 1: Namespace Isolation Matrix
-if [ -z "$ONLY_PHASE" ] || [ "$ONLY_PHASE" = "1" ]; then
-    run_phase 1 "$SCRIPT_DIR/phase1_isolation_matrix/run_matrix.sh"
-fi
-
-# Phase 2: SHM Transport
-if [ -z "$ONLY_PHASE" ] || [ "$ONLY_PHASE" = "2" ]; then
-    run_phase 2 "$SCRIPT_DIR/phase2_shm_transport/run_phase2.sh"
-fi
-
-# Phase 3: manual (NCCL patching)
-if [ "$ONLY_PHASE" = "3" ]; then
-    echo ""
-    echo "Phase 3 (NCCL patching) requires manual steps:"
-    echo "  1. cd phase3_nccl_patch/"
-    echo "  2. docker build -f Dockerfile.nccl-dev -t nccl-dev:latest ."
-    echo "  3. Add patches to patches/"
-    echo "  4. Run: docker compose -f compose.patched_nccl.yml up --abort-on-container-exit"
-    echo ""
-    exit 0
-fi
+    docker compose -f "$compose_file" down --volumes 2>/dev/null || true
+    echo "[OK] $description — done"
+done
 
 # Analysis
 echo ""
 echo "======================================================================"
 echo "  Generating Analysis Report"
 echo "======================================================================"
-cd "$SCRIPT_DIR"
 python3 analyze_exp2.py --results-dir=results/
 
 echo ""
