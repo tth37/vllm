@@ -20,7 +20,7 @@ main() {
     verify_experiment_prereqs
 
     log "Building primary exp1 image: $PRIMARY_IMAGE"
-    TARGET_IMAGE="$PRIMARY_IMAGE" "$REPO_ROOT/examples/docker_executor/build-docker-executor.sh"
+    TARGET_IMAGE="$PRIMARY_IMAGE" "$REPO_ROOT/examples/docker_executor/build_docker_executor.sh"
 
     local image_tag=""
     for image_tag in "${IMAGE_TAGS[@]}"; do

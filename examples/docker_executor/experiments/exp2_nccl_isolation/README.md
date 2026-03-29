@@ -180,7 +180,41 @@ NCCL's cuMem VMM API path (`NCCL_CUMEM_ENABLE=1`) bypasses `cudaDeviceCanAccessP
 
 CUMEM isolation provides stronger isolation than the baseline (private PID, IPC, mount namespaces) while maintaining full NVLink bandwidth.
 
+## Phase 2: End-to-End vLLM Serving Validation
+
+Raw NCCL bandwidth recovery is necessary but not sufficient. Phase 2 validates the CUMEM isolation solution with actual vLLM inference serving.
+
+### Configs
+
+| Config | Description | Executor | Isolation |
+|--------|-------------|----------|-----------|
+| **Baseline Docker+MP** | Standard single-container vLLM | `mp` | None (all GPUs in one container) |
+| **DockerBE + CUMEM** | Per-GPU worker containers + NVLink recovery | `docker` | Private PID/IPC, per-GPU CUDA |
+
+### Running
+
+```bash
+# Build the Docker image first
+./run_vllm_validation.sh --build
+
+# Or if image already exists
+./run_vllm_validation.sh
+
+# Different model
+MODEL=Qwen/Qwen3-8B ./run_vllm_validation.sh
+```
+
+The script sets `VLLM_DOCKER_CUMEM_ISOLATION=1` which triggers the isolation mode in `docker_executor.py`:
+- Workers get private PID/IPC namespaces (no `--ipc host`, no `--pid host`)
+- `CUDA_VISIBLE_DEVICES={local_rank}` (per-GPU compute isolation)
+- `NVIDIA_VISIBLE_DEVICES=all` (NVML topology discovery)
+- `NCCL_CUMEM_ENABLE=1` (cuMem VMM API for NVLink P2P)
+
+Results are saved to `results/vllm_baseline/` and `results/vllm_dockerbe_cumem/`. Re-run `python3 generate_report.py` to include Phase 2 in the HTML report.
+
 ## Quick Start
+
+### Phase 1: NCCL Bandwidth
 
 ```bash
 cd examples/docker_executor/experiments/exp2_nccl_isolation
@@ -188,16 +222,21 @@ cd examples/docker_executor/experiments/exp2_nccl_isolation
 # Build benchmark image
 docker build -t gpu-comm-benchmark:latest -f Dockerfile .
 
-# Run all 3 configs
+# Run all 4 configs
 ./run_all.sh
-
-# Run a single config
-docker compose -f compose.baseline.yml up
-docker compose -f compose.shm_isolation.yml up
-docker compose -f compose.p2p_isolation.yml up
 
 # Analyze results
 python3 analyze_exp2.py
+```
+
+### Phase 2: vLLM Serving
+
+```bash
+# Build vLLM Docker image and run validation
+./run_vllm_validation.sh --build
+
+# Regenerate report (includes Phase 2 if results exist)
+python3 generate_report.py
 ```
 
 ## Environment Variables Reference
@@ -248,17 +287,22 @@ exp2_nccl_isolation/
 ├── diagnose_nccl.py              # NCCL namespace diagnostic tool
 ├── dump_topo.py                  # GPU topology dumper
 ├── analyze_exp2.py               # Multi-config results comparison
-├── run_all.sh                    # Run all 3 configs sequentially
+├── run_all.sh                    # Phase 1: run all NCCL configs
+├── run_vllm_validation.sh        # Phase 2: vLLM serving validation
 ├── compose.baseline.yml          # No isolation (P2P reference)
+├── compose.cumem_isolation.yml   # CUMEM isolation (P2P recovery)
 ├── compose.shm_isolation.yml     # Per-GPU isolation + SHM workaround
 ├── compose.p2p_isolation.yml     # Per-GPU isolation, naive (TCP fallback)
 ├── compose.patched_nccl.yml      # Custom NCCL build (future)
 ├── build_nccl.sh                 # Clone + patch + build NCCL
 ├── Dockerfile.nccl-dev           # NCCL build environment
 ├── patches/                      # NCCL patch files (future)
-├── results/                      # Benchmark JSON results
-│   ├── node192_baseline.json
+├── results/                      # Benchmark results
+│   ├── node192_baseline.json     # Phase 1: NCCL bandwidth
+│   ├── node192_cumem_isolation.json
 │   ├── node192_isolated_shm.json
-│   └── node192_isolated_p2p.json
+│   ├── node192_isolated_p2p.json
+│   ├── vllm_baseline/            # Phase 2: vLLM serving
+│   └── vllm_dockerbe_cumem/
 └── nccl/                         # NCCL source (git submodule)
 ```

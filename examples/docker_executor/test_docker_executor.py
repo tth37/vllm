@@ -3,7 +3,7 @@
 
 This script tests the DockerDistributedExecutor with real Docker containers.
 Make sure to build the Docker image first:
-    ./build-docker-executor.sh
+    ./build_docker_executor.sh
 
 Requirements:
 - Docker installed and running
@@ -91,7 +91,7 @@ def check_docker():
         )
         if result.returncode != 0 or not result.stdout.strip():
             print("ERROR: Docker image vllm/vllm-docker-executor:latest not found")
-            print("Please build it first: ./build-docker-executor.sh")
+            print("Please build it first: ./build_docker_executor.sh")
             return False
 
         print("Docker check passed")

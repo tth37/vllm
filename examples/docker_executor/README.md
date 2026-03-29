@@ -91,7 +91,7 @@ The Docker image definition that:
 - Copies the custom executor files into the container
 - Sets up the Python path for imports
 
-### 4. Build Script (`build-docker-executor.sh`)
+### 4. Build Script (`build_docker_executor.sh`)
 
 Builds the Docker image with the custom executor files.
 
@@ -100,7 +100,7 @@ Builds the Docker image with the custom executor files.
 ### 1. Build the Docker Image
 
 ```bash
-./build-docker-executor.sh
+./build_docker_executor.sh
 ```
 
 This creates `vllm/vllm-docker-executor:latest`.
@@ -149,8 +149,8 @@ vllm serve facebook/opt-125m \
 Use the official `vllm bench serve` command:
 
 ```bash
-# Download a dataset first
-wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
+# Download the ShareGPT dataset (cached in ~/.cache/vllm/datasets/)
+./examples/docker_executor/download_sharegpt.sh
 
 # Run benchmark
 vllm bench serve \
@@ -158,7 +158,7 @@ vllm bench serve \
   --model facebook/opt-125m \
   --endpoint /v1/completions \
   --dataset-name sharegpt \
-  --dataset-path ./ShareGPT_V3_unfiltered_cleaned_split.json \
+  --dataset-path ~/.cache/vllm/datasets/ShareGPT_V3_unfiltered_cleaned_split.json \
   --num-prompts 50
 ```
 
@@ -292,7 +292,7 @@ The Docker executor automatically configures the following for optimal NCCL perf
 
 If you're still seeing slow performance, ensure:
 1. Your GPUs have NVLink connectivity: `nvidia-smi topo -m`
-2. You're using the latest Docker image: `./build-docker-executor.sh`
+2. You're using the latest Docker image: `./build_docker_executor.sh`
 3. The NVIDIA Container Toolkit is properly installed
 
 ### Workers hang at NCCL init with `--ipc host` (deadlock)
@@ -316,13 +316,6 @@ The Docker executor sets `VLLM_RPC_BASE_PATH` to the shared Docker volume (`/tmp
 If you're building a custom executor and encounter this issue, ensure you pass:
 ```
 -e VLLM_RPC_BASE_PATH=/path/to/shared/volume
-```
-
-**Diagnosis tool:**
-
-A reproduction script is provided at `examples/docker_executor/repro_hang.py`:
-```bash
-python examples/docker_executor/repro_hang.py --timeout 90 --tp 2
 ```
 
 ## Implementation Details

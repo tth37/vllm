@@ -16,7 +16,7 @@ NUM_WARMUPS="${NUM_WARMUPS:-3}"
 SERVER_STARTUP_TIMEOUT="${SERVER_STARTUP_TIMEOUT:-300}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.5}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-512}"
-SHAREGPT_PATH="${SHAREGPT_PATH:-$REPO_ROOT/examples/docker_executor/ShareGPT_V3_unfiltered_cleaned_split.json}"
+SHAREGPT_PATH="${SHAREGPT_PATH:-$HOME/.cache/vllm/datasets/ShareGPT_V3_unfiltered_cleaned_split.json}"
 BASELINE_IMAGE="${BASELINE_IMAGE:-vllm/vllm-docker-executor:exp1-baseline}"
 DOCKERBE_SYNC_OUTPUT_IMAGE="${DOCKERBE_SYNC_OUTPUT_IMAGE:-vllm/vllm-docker-executor:exp1-dockerbe_sync_output}"
 DOCKERBE_HYBRID_SHM_IMAGE="${DOCKERBE_HYBRID_SHM_IMAGE:-vllm/vllm-docker-executor:exp1-dockerbe_hybrid_shm}"
@@ -83,8 +83,12 @@ verify_experiment_prereqs() {
     require_tools
 
     if [[ ! -f "$SHAREGPT_PATH" ]]; then
-        err "ShareGPT dataset not found: $SHAREGPT_PATH"
-        exit 1
+        log "ShareGPT dataset not found, downloading..."
+        SHAREGPT_PATH="$("$REPO_ROOT/examples/docker_executor/download_sharegpt.sh")"
+        if [[ ! -f "$SHAREGPT_PATH" ]]; then
+            err "Failed to download ShareGPT dataset"
+            exit 1
+        fi
     fi
 
     if [[ ! -d "$MODEL_CACHE_HINT" ]]; then

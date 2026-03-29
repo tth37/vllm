@@ -3,9 +3,9 @@
 # This builds a custom Docker image from local vLLM source code using uv.
 #
 # Usage:
-#   ./build-docker-executor.sh                    # Build with default settings
-#   TARGET_IMAGE=my-image:latest ./build-docker-executor.sh  # Custom image name
-#   ./build-docker-executor.sh --help             # Show help
+#   ./build_docker_executor.sh                    # Build with default settings
+#   TARGET_IMAGE=my-image:latest ./build_docker_executor.sh  # Custom image name
+#   ./build_docker_executor.sh --help             # Show help
 
 set -e
 
@@ -24,8 +24,8 @@ while [[ $# -gt 0 ]]; do
             echo "  TARGET_IMAGE       Target image name (default: vllm/vllm-docker-executor:latest)"
             echo ""
             echo "Example:"
-            echo "  ./build-docker-executor.sh"
-            echo "  TARGET_IMAGE=myregistry/vllm-docker:v1 ./build-docker-executor.sh"
+            echo "  ./build_docker_executor.sh"
+            echo "  TARGET_IMAGE=myregistry/vllm-docker:v1 ./build_docker_executor.sh"
             exit 0
             ;;
         *)

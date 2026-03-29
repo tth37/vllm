@@ -353,6 +353,13 @@ class DockerDistributedExecutor(Executor):
         total_gpus = self.parallel_config.tensor_parallel_size * self.parallel_config.pipeline_parallel_size
         all_gpus = ",".join(str(i) for i in range(total_gpus))
 
+        # CUMEM isolation mode: per-GPU containers with NVLink recovery via
+        # NCCL's cuMem VMM API.  Private PID/IPC namespaces are preserved;
+        # only the network namespace is shared (required for abstract UDS
+        # used by NCCL to pass cuMem file descriptors between containers).
+        cumem_isolation = os.environ.get(
+            "VLLM_DOCKER_CUMEM_ISOLATION", "0") == "1"
+
         cmd = [
             "docker", "run",
             "-d",
@@ -360,9 +367,19 @@ class DockerDistributedExecutor(Executor):
             "--name", container_name,
             "--gpus", "all",
             "--network", "host",
-            "--ipc", "host",
-            "--pid", "host",
-            "--shm-size=8g",
+        ]
+
+        if cumem_isolation:
+            # Private PID and IPC namespaces (no --ipc host, no --pid host)
+            cmd.extend(["--shm-size=4g"])
+        else:
+            cmd.extend([
+                "--ipc", "host",
+                "--pid", "host",
+                "--shm-size=8g",
+            ])
+
+        cmd.extend([
             "-v", f"{shared_volume}:{shared_volume}",
             "-e", f"VLLM_WORKER_RANK={rank}",
             "-e", f"VLLM_WORKER_LOCAL_RANK={local_rank}",
@@ -378,15 +395,26 @@ class DockerDistributedExecutor(Executor):
             # in_the_same_node_as() return True, but ZMQ IPC sockets in
             # container-local /tmp are invisible across containers.
             "-e", f"VLLM_RPC_BASE_PATH={shared_volume}",
-            "-e", f"NVIDIA_VISIBLE_DEVICES={all_gpus}",
-            "-e", f"CUDA_VISIBLE_DEVICES={all_gpus}",
             "-e", f"LOCAL_RANK={local_rank}",
             "-e", "HF_HOME=/root/.cache/huggingface",
             "-e", "NCCL_SOCKET_IFNAME=^lo",
             "-e", "NCCL_DEBUG=INFO",
             "-e", "NCCL_DEBUG_SUBSYS=INIT,GRAPH",
             "-e", "PYTHONUNBUFFERED=1",
-        ]
+        ])
+
+        if cumem_isolation:
+            # Per-GPU CUDA visibility; NVML sees all GPUs for topology
+            cmd.extend([
+                "-e", "NVIDIA_VISIBLE_DEVICES=all",
+                "-e", f"CUDA_VISIBLE_DEVICES={local_rank}",
+                "-e", "NCCL_CUMEM_ENABLE=1",
+            ])
+        else:
+            cmd.extend([
+                "-e", f"NVIDIA_VISIBLE_DEVICES={all_gpus}",
+                "-e", f"CUDA_VISIBLE_DEVICES={all_gpus}",
+            ])
 
         hf_cache = os.path.expanduser("~/.cache/huggingface")
         if os.path.exists(hf_cache):
