@@ -103,7 +103,7 @@ SIZE_LABELS = ["1 KB", "10 KB", "100 KB", "1 MB", "10 MB", "100 MB"]
 def load_results() -> dict[str, dict]:
     data = {}
     for cfg in CONFIGS:
-        path = RESULTS_DIR / cfg["file"]
+        path = RESULTS_DIR / "phase1_nccl" / cfg["file"]
         if path.exists():
             with open(path) as f:
                 data[cfg["key"]] = json.load(f)
@@ -586,9 +586,15 @@ VLLM_VARIANTS = [
     },
     {
         "key": "vllm_dockerbe_cumem",
-        "label": "DockerBE + CUMEM Isolation",
+        "label": "DockerBE + CUMEM (TCP MQ)",
         "color": "#55a868",
         "dir": "vllm_dockerbe_cumem",
+    },
+    {
+        "key": "vllm_dockerbe_cumem_shm",
+        "label": "DockerBE + CUMEM (SHM MQ)",
+        "color": "#4c72b0",
+        "dir": "vllm_dockerbe_cumem_shm",
     },
 ]
 
@@ -610,17 +616,23 @@ def parse_bench_file(path: Path) -> dict[str, float]:
 
 
 def load_vllm_results() -> dict[str, dict[str, float]] | None:
-    """Load vLLM serving benchmark results. Returns None if not available."""
+    """Load vLLM serving benchmark results.
+
+    Returns None if no results at all.  Variants with missing bench files
+    are silently skipped — only the baseline is required.
+    """
     results = {}
     for v in VLLM_VARIANTS:
-        bench_file = RESULTS_DIR / v["dir"] / "bench.txt"
+        bench_file = RESULTS_DIR / "phase2_vllm" / v["dir"] / "bench.txt"
         if not bench_file.exists():
-            return None
+            continue
         metrics = parse_bench_file(bench_file)
-        if not metrics:
-            return None
-        results[v["key"]] = metrics
-    return results
+        if metrics:
+            results[v["key"]] = metrics
+    # Need at least the baseline to produce a comparison
+    if "vllm_baseline" not in results:
+        return None
+    return results if len(results) >= 2 else None
 
 
 def plot_vllm_comparison(vllm_data: dict[str, dict[str, float]],
@@ -641,12 +653,15 @@ def plot_vllm_comparison(vllm_data: dict[str, dict[str, float]],
 
     bar_width = 0.35
 
+    # Only plot variants that have data
+    active_variants = [v for v in VLLM_VARIANTS if v["key"] in vllm_data]
+
     for ax, (metric_key, ylabel, precision) in zip(axes[0], display_metrics):
         ax.set_axisbelow(True)
         values = []
         colors = []
         labels = []
-        for v in VLLM_VARIANTS:
+        for v in active_variants:
             val = vllm_data[v["key"]].get(metric_key, 0)
             values.append(val)
             colors.append(v["color"])
@@ -669,7 +684,7 @@ def plot_vllm_comparison(vllm_data: dict[str, dict[str, float]],
         ymin, ymax = ax.get_ylim()
         ax.set_ylim(ymin, ymax * 1.15)
 
-    fig.suptitle("vLLM Serving: Baseline vs DockerBE + CUMEM Isolation",
+    fig.suptitle("vLLM Serving: Phase 2 Variant Comparison",
                  fontsize=13, y=0.98)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
 
@@ -682,7 +697,8 @@ def plot_vllm_comparison(vllm_data: dict[str, dict[str, float]],
 def vllm_results_html(vllm_data: dict[str, dict[str, float]]) -> str:
     """Generate HTML table for vLLM serving comparison."""
     baseline = vllm_data["vllm_baseline"]
-    cumem = vllm_data["vllm_dockerbe_cumem"]
+    active_variants = [v for v in VLLM_VARIANTS
+                       if v["key"] in vllm_data and v["key"] != "vllm_baseline"]
 
     metrics_display = [
         ("median_tpot_ms", "Median TPOT (ms)", 2, True),
@@ -695,31 +711,36 @@ def vllm_results_html(vllm_data: dict[str, dict[str, float]]) -> str:
         ("request_throughput_rps", "Request Throughput (req/s)", 2, False),
     ]
 
+    # Header row: Metric | Baseline | variant1 | delta1 | variant2 | delta2 ...
+    header = "<tr><th>Metric</th><th>Baseline</th>"
+    for v in active_variants:
+        header += f"<th>{v['label']}</th><th>\u0394 vs BL</th>"
+    header += "</tr>\n"
+
     rows = ""
     for key, label, prec, lower_is_better in metrics_display:
         bl_val = baseline.get(key, 0)
-        cm_val = cumem.get(key, 0)
-        if bl_val > 0:
-            if lower_is_better:
-                delta_pct = (cm_val - bl_val) / bl_val * 100
+        row = f"<tr><td>{label}</td><td>{bl_val:.{prec}f}</td>"
+        for v in active_variants:
+            val = vllm_data[v["key"]].get(key, 0)
+            if bl_val > 0:
+                delta_pct = (val - bl_val) / bl_val * 100
+                delta_str = f"{delta_pct:+.1f}%"
+                delta_color = ""
+                if abs(delta_pct) < 2:
+                    delta_color = "background:#e8f5e9"
+                elif (lower_is_better and delta_pct > 5) or (
+                        not lower_is_better and delta_pct < -5):
+                    delta_color = "background:#ffebee"
             else:
-                delta_pct = (cm_val - bl_val) / bl_val * 100
-            delta_str = f"{delta_pct:+.1f}%"
-            delta_color = ""
-            if abs(delta_pct) < 2:
-                delta_color = "background:#e8f5e9"
-            elif (lower_is_better and delta_pct > 5) or (not lower_is_better and delta_pct < -5):
-                delta_color = "background:#ffebee"
-        else:
-            delta_str = "&mdash;"
-            delta_color = ""
+                delta_str = "&mdash;"
+                delta_color = ""
+            row += (f"<td>{val:.{prec}f}</td>"
+                    f'<td style="{delta_color}">{delta_str}</td>')
+        row += "</tr>\n"
+        rows += row
 
-        rows += (f"<tr><td>{label}</td>"
-                 f"<td>{bl_val:.{prec}f}</td>"
-                 f"<td>{cm_val:.{prec}f}</td>"
-                 f'<td style="{delta_color}">{delta_str}</td></tr>\n')
-
-    return rows
+    return header + rows
 
 
 # ---------------------------------------------------------------------------
@@ -1267,19 +1288,13 @@ def generate_html(data: dict, figures: dict[str, Path],
               'achieves comparable performance to the baseline Docker+MP deployment.')}
 
     <table>
-      <tr>
-        <th>Metric</th>
-        <th>Baseline Docker+MP</th>
-        <th>DockerBE + CUMEM</th>
-        <th>Delta</th>
-      </tr>
       {vllm_results_html(vllm_data)}
     </table>
 
     <div class="highlight-box">
-      <b>Result:</b> DockerBE with CUMEM isolation achieves serving performance
-      comparable to the standard Docker+MP baseline, confirming that the NVLink P2P
-      bandwidth recovery translates to real inference workloads.
+      <b>Result:</b> Comparing DockerBE CUMEM variants against the baseline
+      Docker+MP deployment to identify the source of any performance overhead
+      and confirm NVLink P2P bandwidth recovery translates to real inference workloads.
     </div>
     """}
 

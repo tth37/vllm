@@ -103,7 +103,7 @@ run_benchmark() {
 # Config 1: Baseline Docker+MP (single container, standard TP)
 # ─────────────────────────────────────────────────────────────────────
 run_baseline() {
-    local results_dir="$SCRIPT_DIR/results/vllm_baseline"
+    local results_dir="$SCRIPT_DIR/results/phase2_vllm/vllm_baseline"
     mkdir -p "$results_dir"
     local server_log="$results_dir/server.log"
     local bench_file="$results_dir/bench.txt"
@@ -151,7 +151,7 @@ run_baseline() {
 # Config 2: DockerBE + CUMEM Isolation (per-GPU containers, NVLink)
 # ─────────────────────────────────────────────────────────────────────
 run_dockerbe_cumem() {
-    local results_dir="$SCRIPT_DIR/results/vllm_dockerbe_cumem"
+    local results_dir="$SCRIPT_DIR/results/phase2_vllm/vllm_dockerbe_cumem"
     mkdir -p "$results_dir"
     local server_log="$results_dir/server.log"
     local bench_file="$results_dir/bench.txt"
@@ -255,7 +255,7 @@ main() {
         echo "  Benchmark: $NUM_PROMPTS prompts, rate=$REQUEST_RATE, $NUM_WARMUPS warmups"
         echo "================================================================"
         echo ""
-        for variant_dir in "$SCRIPT_DIR"/results/vllm_*/; do
+        for variant_dir in "$SCRIPT_DIR"/results/phase2_vllm/vllm_*/; do
             local bench="$variant_dir/bench.txt"
             [[ -f "$bench" ]] || continue
             echo "── $(basename "$variant_dir") ──"
