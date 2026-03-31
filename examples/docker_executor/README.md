@@ -371,6 +371,125 @@ Key indicators of successful single-node detection:
 - `localRanks N` - All ranks are local
 - `via SHM/direct/direct` or `via P2P/CUMEM/read` - Using fast transport, not TCP
 
+## Environment Setup Guide
+
+Step-by-step instructions for setting up the experiment environment on a fresh machine (e.g., migrating to a new node).
+
+### 1. Prerequisites
+
+Ensure the following are available on the target machine:
+
+- NVIDIA GPU with drivers installed (`nvidia-smi` should work)
+- Docker Engine with `nvidia-container-toolkit` (formerly `nvidia-docker2`)
+- `curl`, `git`
+
+### 2. Clone or copy the repository
+
+The expected layout is `~/repositories/vllm-dev/vllm-source/`.
+
+**Option A -- git clone from origin:**
+
+```bash
+mkdir -p ~/repositories/vllm-dev
+cd ~/repositories/vllm-dev
+git clone <origin-url> vllm-source
+```
+
+**Option B -- rsync from an existing machine:**
+
+```bash
+rsync -az user@source-machine:~/repositories/vllm-dev/ ~/repositories/vllm-dev/
+```
+
+### 3. Install uv (Python package manager)
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+After installation, restart your shell or `source ~/.bashrc` / `source ~/.config/fish/config.fish` so that `uv` is on your PATH.
+
+### 4. Create the Python virtualenv
+
+```bash
+cd ~/repositories/vllm-dev
+uv venv --python 3.12 .venv
+source .venv/bin/activate      # bash/zsh
+# source .venv/bin/activate.fish  # fish
+```
+
+Install vllm from source (editable mode):
+
+```bash
+# If the repo was rsync'd without .git, setuptools-scm needs a version hint:
+export SETUPTOOLS_SCM_PRETEND_VERSION=0.1.dev0
+
+uv pip install -e vllm-source/
+```
+
+Install additional dependencies for report generation:
+
+```bash
+uv pip install matplotlib
+```
+
+### 5. Build the Docker image
+
+```bash
+cd ~/repositories/vllm-dev/vllm-source
+bash examples/docker_executor/build_docker_executor.sh
+```
+
+To build with a custom tag (e.g., for a specific experiment):
+
+```bash
+TARGET_IMAGE=vllm/vllm-docker-executor:exp2-cumem \
+  bash examples/docker_executor/build_docker_executor.sh
+```
+
+### 6. Download the ShareGPT dataset
+
+```bash
+bash examples/docker_executor/download_sharegpt.sh
+```
+
+The dataset is cached at `~/.cache/vllm/datasets/ShareGPT_V3_unfiltered_cleaned_split.json`.
+
+### 7. Download model weights
+
+`hf` CLI is installed automatically as part of the vllm dependencies (via `huggingface_hub`).
+
+For machines in China, use the HuggingFace mirror:
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
+Then download the models you need:
+
+```bash
+hf download Qwen/Qwen3-4B
+hf download Qwen/Qwen3-8B
+hf download Qwen/Qwen3-14B
+```
+
+Weights are cached under `~/.cache/huggingface/hub/`.
+
+### 8. Verify the setup
+
+```bash
+# Check GPU visibility
+nvidia-smi
+
+# Check Docker GPU access
+docker run --rm --gpus all nvidia/cuda:12.1.0-devel-ubuntu22.04 nvidia-smi
+
+# Check vllm installation
+.venv/bin/python3 -c "import vllm; print(vllm.__version__)"
+```
+
+If all three commands succeed, the environment is ready to run experiments.
+
 ## Future Improvements
 
 1. **Multi-node support**: Add etcd/consul for service discovery across hosts

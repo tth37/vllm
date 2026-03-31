@@ -370,8 +370,18 @@ class DockerDistributedExecutor(Executor):
         ]
 
         if cumem_isolation:
-            # Private PID and IPC namespaces (no --ipc host, no --pid host)
-            cmd.extend(["--shm-size=4g"])
+            # Private PID and IPC namespaces (no --ipc host, no --pid host).
+            # All CUMEM workers share a named Docker volume at /dev/shm so
+            # that NCCL's shmDev topology detection sees matching inodes
+            # across containers (required for same-node P2P channel setup).
+            shm_vol = "vllm-cumem-shm"
+            subprocess.run(
+                ["docker", "volume", "create", "--driver", "local",
+                 "--opt", "type=tmpfs", "--opt", "device=tmpfs",
+                 "--opt", "o=size=4g", shm_vol],
+                capture_output=True, check=False,  # idempotent
+            )
+            cmd.extend(["-v", f"{shm_vol}:/dev/shm"])
         else:
             cmd.extend([
                 "--ipc", "host",
@@ -395,7 +405,6 @@ class DockerDistributedExecutor(Executor):
             # in_the_same_node_as() return True, but ZMQ IPC sockets in
             # container-local /tmp are invisible across containers.
             "-e", f"VLLM_RPC_BASE_PATH={shared_volume}",
-            "-e", f"LOCAL_RANK={local_rank}",
             "-e", "HF_HOME=/root/.cache/huggingface",
             "-e", "NCCL_SOCKET_IFNAME=^lo",
             "-e", "NCCL_DEBUG=INFO",
@@ -404,16 +413,30 @@ class DockerDistributedExecutor(Executor):
         ])
 
         if cumem_isolation:
-            # Per-GPU CUDA visibility; NVML sees all GPUs for topology
+            # Per-GPU CUDA visibility; NVML sees all GPUs for topology.
+            # LOCAL_RANK is 0 inside each container because
+            # CUDA_VISIBLE_DEVICES makes only one GPU visible.
             cmd.extend([
                 "-e", "NVIDIA_VISIBLE_DEVICES=all",
                 "-e", f"CUDA_VISIBLE_DEVICES={local_rank}",
                 "-e", "NCCL_CUMEM_ENABLE=1",
+                "-e", "LOCAL_RANK=0",
+            ])
+            # Mount the host's worker entrypoint so the container uses
+            # CUMEM-aware config deserialization (nnodes fix).
+            _host_entrypoint = os.path.abspath(os.path.join(
+                os.path.dirname(__file__),
+                "docker_worker_entrypoint.py"))
+            cmd.extend([
+                "-v", f"{_host_entrypoint}:"
+                      "/vllm/vllm/v1/executor/"
+                      "docker_worker_entrypoint.py:ro",
             ])
         else:
             cmd.extend([
                 "-e", f"NVIDIA_VISIBLE_DEVICES={all_gpus}",
                 "-e", f"CUDA_VISIBLE_DEVICES={all_gpus}",
+                "-e", f"LOCAL_RANK={local_rank}",
             ])
 
         hf_cache = os.path.expanduser("~/.cache/huggingface")
@@ -843,6 +866,12 @@ class DockerDistributedExecutor(Executor):
                 shutil.rmtree(shared_volume)
             except Exception as e:
                 logger.warning("Failed to clean up shared volume: %s", e)
+
+        # Remove the shared SHM Docker volume used in CUMEM isolation mode.
+        subprocess.run(
+            ["docker", "volume", "rm", "-f", "vllm-cumem-shm"],
+            capture_output=True, check=False,
+        )
 
         self.rpc_broadcast_mq = None
         self.response_mqs = []

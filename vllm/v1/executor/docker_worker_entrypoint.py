@@ -79,6 +79,17 @@ def deserialize_vllm_config(config_b64: str) -> VllmConfig:
     parallel_config_dict = config_dict["parallel_config"].copy()
     parallel_config_dict.pop("world_size", None)
     parallel_config_dict.pop("local_world_size", None)
+    # In CUMEM isolation mode, each container sees only 1 GPU
+    # (CUDA_VISIBLE_DEVICES=local_rank).  Set nnodes = world_size so that
+    # ParallelConfig's GPU-count validation doesn't reject the config.
+    import os
+    if os.environ.get("NCCL_CUMEM_ENABLE") == "1":
+        world_size = (parallel_config_dict.get("tensor_parallel_size", 1)
+                      * parallel_config_dict.get("pipeline_parallel_size", 1))
+        parallel_config_dict["nnodes"] = world_size
+        # Custom allreduce assumes all GPUs visible; disable it since
+        # each CUMEM container sees only 1 GPU.
+        parallel_config_dict["disable_custom_all_reduce"] = True
     parallel_config = ParallelConfig(**parallel_config_dict)
 
     return VllmConfig(
@@ -98,10 +109,17 @@ def init_distributed_for_worker(
     distributed_init_method: str,
     tensor_parallel_size: int = 1,
     pipeline_parallel_size: int = 1,
+    disable_custom_all_reduce: bool = False,
 ) -> None:
     """Initialize distributed environment for the worker."""
     from vllm.distributed import init_distributed_environment
-    from vllm.distributed.parallel_state import ensure_model_parallel_initialized
+    from vllm.distributed.parallel_state import (
+        ensure_model_parallel_initialized,
+        set_custom_all_reduce,
+    )
+
+    if disable_custom_all_reduce:
+        set_custom_all_reduce(False)
 
     # Initialize distributed environment
     init_distributed_environment(
@@ -150,6 +168,10 @@ def main():
     """Main entry point for Docker worker containers."""
     rank = int(get_env_var("VLLM_WORKER_RANK"))
     local_rank = int(get_env_var("VLLM_WORKER_LOCAL_RANK"))
+    # In CUMEM isolation mode each container sees only 1 GPU
+    # (CUDA_VISIBLE_DEVICES=N), so the in-container local_rank is always 0.
+    if os.environ.get("NCCL_CUMEM_ENABLE") == "1":
+        local_rank = 0
     world_size = int(get_env_var("VLLM_WORLD_SIZE"))
     handle_b64 = get_env_var("VLLM_SCHEDULER_HANDLE")
     master_addr = get_env_var("VLLM_MASTER_ADDR")
@@ -208,6 +230,7 @@ def main():
             distributed_init_method=distributed_init_method,
             tensor_parallel_size=vllm_config.parallel_config.tensor_parallel_size,
             pipeline_parallel_size=vllm_config.parallel_config.pipeline_parallel_size,
+            disable_custom_all_reduce=vllm_config.parallel_config.disable_custom_all_reduce,
         )
 
         scheduler_handle = deserialize_scheduler_handle(handle_b64)

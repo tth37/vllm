@@ -163,12 +163,15 @@ run_dockerbe_cumem() {
 
     # Host runs the vllm serve process; workers are spawned as Docker containers
     # with CUMEM isolation (private PID/IPC, per-GPU CUDA_VISIBLE_DEVICES).
+    # SHM MQs are disabled because CUMEM containers have private IPC
+    # namespaces — POSIX shared memory is invisible across IPC boundaries.
+    # TCP MQs are used instead (VLLM_DOCKER_*_MQ_SHM=0).
     CUDA_VISIBLE_DEVICES="$GPU_DEVICES" \
         VLLM_DOCKER_IMAGE="$IMAGE_TAG" \
         VLLM_DOCKER_CUMEM_ISOLATION=1 \
         VLLM_DOCKER_ASYNC_OUTPUT_COPY=1 \
-        VLLM_DOCKER_BROADCAST_MQ_SHM=1 \
-        VLLM_DOCKER_RESPONSE_MQ_SHM=1 \
+        VLLM_DOCKER_BROADCAST_MQ_SHM=0 \
+        VLLM_DOCKER_RESPONSE_MQ_SHM=0 \
         PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" \
         "$VLLM_CMD" serve "$MODEL" \
             --tensor-parallel-size "$TP_SIZE" \
