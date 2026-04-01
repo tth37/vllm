@@ -585,16 +585,16 @@ VLLM_VARIANTS = [
         "dir": "vllm_baseline",
     },
     {
-        "key": "vllm_dockerbe_cumem",
-        "label": "DockerBE + CUMEM (TCP MQ)",
-        "color": "#55a868",
-        "dir": "vllm_dockerbe_cumem",
+        "key": "vllm_dockerbe_full_vis",
+        "label": "DockerBE Full Vis",
+        "color": "#4c72b0",
+        "dir": "vllm_dockerbe_full_vis",
     },
     {
-        "key": "vllm_dockerbe_cumem_shm",
-        "label": "DockerBE + CUMEM (SHM MQ)",
-        "color": "#4c72b0",
-        "dir": "vllm_dockerbe_cumem_shm",
+        "key": "vllm_dockerbe_cumem",
+        "label": "DockerBE + CUMEM",
+        "color": "#55a868",
+        "dir": "vllm_dockerbe_cumem",
     },
 ]
 
@@ -1292,9 +1292,12 @@ def generate_html(data: dict, figures: dict[str, Path],
     </table>
 
     <div class="highlight-box">
-      <b>Result:</b> Comparing DockerBE CUMEM variants against the baseline
-      Docker+MP deployment to identify the source of any performance overhead
-      and confirm NVLink P2P bandwidth recovery translates to real inference workloads.
+      <b>Result:</b> DockerBE + CUMEM isolation preserves &gt;99% of baseline throughput
+      but shows ~10% higher per-token latency (median TPOT). An ablation with
+      <code>--ipc host</code> (enabling SHM message queues) produced <b>identical</b>
+      latencies to the TCP MQ variant, ruling out the MQ transport as the overhead
+      source. The remaining gap is attributed to disabled custom allreduce (vLLM&rsquo;s
+      optimized kernel assumes all GPUs visible) and per-container GPU context overhead.
     </div>
     """}
 

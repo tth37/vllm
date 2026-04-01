@@ -370,25 +370,18 @@ class DockerDistributedExecutor(Executor):
         ]
 
         if cumem_isolation:
-            # CUMEM isolation keeps per-GPU CUDA_VISIBLE_DEVICES and
-            # NCCL_CUMEM_ENABLE=1 regardless of the IPC mode below.
-            cumem_ipc_host = os.environ.get(
-                "VLLM_DOCKER_CUMEM_IPC_HOST", "0") == "1"
-            if cumem_ipc_host:
-                # Share host IPC namespace so SHM message queues work.
-                # Trades IPC isolation for lower latency.
-                cmd.extend(["--ipc", "host", "--shm-size=8g"])
-            else:
-                # Private IPC namespace — needs a shared /dev/shm volume
-                # for NCCL shmDev topology detection across containers.
-                shm_vol = "vllm-cumem-shm"
-                subprocess.run(
-                    ["docker", "volume", "create", "--driver", "local",
-                     "--opt", "type=tmpfs", "--opt", "device=tmpfs",
-                     "--opt", "o=size=4g", shm_vol],
-                    capture_output=True, check=False,  # idempotent
-                )
-                cmd.extend(["-v", f"{shm_vol}:/dev/shm"])
+            # Private PID and IPC namespaces (no --ipc host, no --pid host).
+            # All CUMEM workers share a named Docker volume at /dev/shm so
+            # that NCCL's shmDev topology detection sees matching inodes
+            # across containers (required for same-node P2P channel setup).
+            shm_vol = "vllm-cumem-shm"
+            subprocess.run(
+                ["docker", "volume", "create", "--driver", "local",
+                 "--opt", "type=tmpfs", "--opt", "device=tmpfs",
+                 "--opt", "o=size=4g", shm_vol],
+                capture_output=True, check=False,  # idempotent
+            )
+            cmd.extend(["-v", f"{shm_vol}:/dev/shm"])
         else:
             cmd.extend([
                 "--ipc", "host",

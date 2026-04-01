@@ -2,9 +2,9 @@
 # Run all Phase 2 vLLM serving variants sequentially.
 #
 # Usage:
-#   ./run_phase2_all.sh             # All 3 variants
+#   ./run_phase2_all.sh             # All variants
 #   ./run_phase2_all.sh baseline    # Just baseline
-#   ./run_phase2_all.sh cumem_shm   # Just the SHM ablation
+#   ./run_phase2_all.sh cumem       # Just CUMEM
 
 set -euo pipefail
 
@@ -25,9 +25,9 @@ run_variant() {
     bash "$SCRIPT_DIR/$script"
 }
 
-run_variant "baseline"   "run_phase2_baseline.sh"
-run_variant "cumem"      "run_phase2_cumem.sh"
-run_variant "cumem_shm"  "run_phase2_cumem_shm.sh"
+run_variant "baseline"       "run_phase2_baseline.sh"
+run_variant "dockerbe_full"  "run_phase2_dockerbe_full_vis.sh"
+run_variant "cumem"          "run_phase2_cumem.sh"
 
 echo ""
 echo "################################################################"

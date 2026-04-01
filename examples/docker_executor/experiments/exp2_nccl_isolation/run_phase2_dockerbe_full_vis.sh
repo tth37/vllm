@@ -1,25 +1,27 @@
 #!/bin/bash
-# Phase 2 Variant: DockerBE + CUMEM + IPC Host (SHM MQs)
-# Per-GPU worker containers with NCCL CUMEM P2P recovery,
-# but with --ipc host to enable SHM message queues.
+# Phase 2 Variant: DockerBE + CUMEM + All GPUs Visible (custom allreduce enabled)
 #
-# This ablation isolates the TCP MQ overhead: if this variant matches
-# baseline latency, the ~10% overhead in the pure CUMEM variant is
-# entirely due to TCP-based message queues.
+# Ablation to isolate whether the ~10% latency overhead comes from disabled
+# custom allreduce or from container/DockerBE RPC overhead.
 #
-# Trade-off: IPC isolation is sacrificed (containers share host SysV IPC
-# and POSIX SHM), but PID/mount/GPU isolation is preserved.
+# Each worker container sees ALL GPUs (NVIDIA_VISIBLE_DEVICES=all,
+# CUDA_VISIBLE_DEVICES=all) but still uses CUMEM for NCCL P2P.
+# Custom allreduce is NOT disabled because all GPUs are visible.
+#
+# Trade-off: GPU compute isolation is sacrificed (each container can access
+# any GPU), but NCCL still uses CUMEM path. If this matches baseline latency,
+# the overhead in the pure CUMEM variant is from disabled custom allreduce.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/exp2_common.sh"
 
-RESULTS_DIR="${RESULTS_DIR:-$PHASE2_RESULTS_DIR/vllm_dockerbe_cumem_shm}"
+RESULTS_DIR="${RESULTS_DIR:-$PHASE2_RESULTS_DIR/vllm_dockerbe_full_vis}"
 
 main() {
     verify_prereqs
-    print_header "DockerBE + CUMEM + IPC Host, SHM MQs (TP=$TP_SIZE)"
+    print_header "DockerBE Full GPU Visibility (TP=$TP_SIZE)"
 
     mkdir -p "$RESULTS_DIR"
     local server_log="$RESULTS_DIR/server.log"
@@ -29,10 +31,11 @@ main() {
     cleanup
     sleep 3
 
+    # Standard DockerBE mode (no CUMEM isolation) — all GPUs visible,
+    # --ipc host for SHM MQs and custom allreduce IPC buffers.
+    # This is the exp1 "full SHM" variant adapted for exp2.
     CUDA_VISIBLE_DEVICES="$GPU_DEVICES" \
         VLLM_DOCKER_IMAGE="$IMAGE_TAG" \
-        VLLM_DOCKER_CUMEM_ISOLATION=1 \
-        VLLM_DOCKER_CUMEM_IPC_HOST=1 \
         VLLM_DOCKER_ASYNC_OUTPUT_COPY=1 \
         VLLM_DOCKER_BROADCAST_MQ_SHM=1 \
         VLLM_DOCKER_RESPONSE_MQ_SHM=1 \
