@@ -472,6 +472,13 @@ class DockerDistributedExecutor(Executor):
         if mkl_num_threads := os.environ.get("MKL_NUM_THREADS"):
             cmd.extend(["-e", f"MKL_NUM_THREADS={mkl_num_threads}"])
 
+        # Pass through NCCL tuning environment variables if set on the host.
+        for nccl_var in ("NCCL_PROTO", "NCCL_ALGO", "NCCL_MIN_NCHANNELS",
+                         "NCCL_MAX_NCHANNELS", "NCCL_BUFFSIZE",
+                         "NCCL_NTHREADS"):
+            if val := os.environ.get(nccl_var):
+                cmd.extend(["-e", f"{nccl_var}={val}"])
+
         # Add the image and command
         # Use vllm/vllm-docker-executor as the default image since it contains
         # the custom DockerDistributedExecutor files (docker_worker_entrypoint.py)

@@ -25,9 +25,8 @@ run_variant() {
     bash "$SCRIPT_DIR/$script"
 }
 
-run_variant "baseline"       "run_phase2_baseline.sh"
-run_variant "dockerbe_full"  "run_phase2_dockerbe_full_vis.sh"
-run_variant "cumem"          "run_phase2_cumem.sh"
+run_variant "baseline"   "run_phase2_baseline.sh"
+run_variant "cumem"      "run_phase2_cumem.sh"
 
 echo ""
 echo "################################################################"

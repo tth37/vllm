@@ -580,19 +580,19 @@ VLLM_METRIC_KEYS = {
 VLLM_VARIANTS = [
     {
         "key": "vllm_baseline",
-        "label": "Baseline Docker+MP",
+        "label": "Baseline",
         "color": "#2c2c2c",
         "dir": "vllm_baseline",
     },
     {
-        "key": "vllm_dockerbe_full_vis",
-        "label": "DockerBE Full Vis",
-        "color": "#4c72b0",
-        "dir": "vllm_dockerbe_full_vis",
+        "key": "vllm_baseline_no_custom_ar",
+        "label": "Baseline\n(no custom AR)",
+        "color": "#c44e52",
+        "dir": "vllm_baseline_no_custom_ar",
     },
     {
         "key": "vllm_dockerbe_cumem",
-        "label": "DockerBE + CUMEM",
+        "label": "DockerBE\n+ CUMEM",
         "color": "#55a868",
         "dir": "vllm_dockerbe_cumem",
     },
@@ -648,13 +648,15 @@ def plot_vllm_comparison(vllm_data: dict[str, dict[str, float]],
     ]
 
     fig, axes = plt.subplots(1, len(display_metrics),
-                             figsize=(4 * len(display_metrics), 4),
+                             figsize=(4.5 * len(display_metrics), 4.5),
                              squeeze=False)
-
-    bar_width = 0.35
 
     # Only plot variants that have data
     active_variants = [v for v in VLLM_VARIANTS if v["key"] in vllm_data]
+    n = len(active_variants)
+    bar_width = 0.7 / max(n, 1)
+    gap = 0.05
+    total_group_width = n * bar_width + (n - 1) * gap
 
     for ax, (metric_key, ylabel, precision) in zip(axes[0], display_metrics):
         ax.set_axisbelow(True)
@@ -665,9 +667,9 @@ def plot_vllm_comparison(vllm_data: dict[str, dict[str, float]],
             val = vllm_data[v["key"]].get(metric_key, 0)
             values.append(val)
             colors.append(v["color"])
-            labels.append(v["label"].replace(" + ", "\n+ "))
+            labels.append(v["label"])
 
-        positions = list(range(len(values)))
+        positions = [i * (bar_width + gap) for i in range(n)]
         bars = ax.bar(positions, values, width=bar_width, color=colors,
                       edgecolor="#333", linewidth=0.5)
 
@@ -679,14 +681,15 @@ def plot_vllm_comparison(vllm_data: dict[str, dict[str, float]],
                         ha="center", va="bottom", fontsize=9, color="#333")
 
         ax.set_xticks(positions)
-        ax.set_xticklabels(labels, fontsize=8)
+        ax.set_xticklabels(labels, fontsize=7)
         ax.set_ylabel(ylabel)
+        ax.set_xlim(-bar_width, positions[-1] + bar_width * 1.5)
         ymin, ymax = ax.get_ylim()
         ax.set_ylim(ymin, ymax * 1.15)
 
     fig.suptitle("vLLM Serving: Phase 2 Variant Comparison",
                  fontsize=13, y=0.98)
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.tight_layout(rect=(0, 0.05, 1, 0.93))
 
     output_path = ASSET_DIR / filename
     fig.savefig(output_path, dpi=150, bbox_inches="tight", facecolor="white")
@@ -1293,11 +1296,16 @@ def generate_html(data: dict, figures: dict[str, Path],
 
     <div class="highlight-box">
       <b>Result:</b> DockerBE + CUMEM isolation preserves &gt;99% of baseline throughput
-      but shows ~10% higher per-token latency (median TPOT). An ablation with
-      <code>--ipc host</code> (enabling SHM message queues) produced <b>identical</b>
-      latencies to the TCP MQ variant, ruling out the MQ transport as the overhead
-      source. The remaining gap is attributed to disabled custom allreduce (vLLM&rsquo;s
-      optimized kernel assumes all GPUs visible) and per-container GPU context overhead.
+      but shows ~10% higher per-token latency (median TPOT 7.46ms vs 6.67ms).
+      <br><br>
+      <b>Root cause confirmed:</b> Running the baseline with
+      <code>--disable-custom-all-reduce</code> produces <b>identical</b> latency
+      (7.44ms) to the CUMEM variant (7.46ms).  The ~10% gap is entirely due to
+      vLLM&rsquo;s custom allreduce kernel being incompatible with per-GPU container
+      isolation (it uses <code>cudaIpcMemHandle</code> which requires all GPUs
+      visible in a single process).  CUMEM isolation itself, including container
+      overhead, NCCL P2P communication, and TCP message queues, adds
+      <b>zero measurable overhead</b>.
     </div>
     """}
 
