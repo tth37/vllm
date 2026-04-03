@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Research Plan: Elastic GPU Inference Serving via Container-Isolated Tensor Parallelism</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Times New Roman", "Nimbus Roman", Times, serif;
+      background: #fff;
+      color: #111;
+      line-height: 1.6;
+    }
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 40px 32px 60px;
+    }
+    h1 {
+      font-size: 22px;
+      text-align: center;
+      margin: 0 0 4px;
+      line-height: 1.3;
+    }
+    .subtitle {
+      text-align: center;
+      font-size: 14px;
+      color: #444;
+      margin: 0 0 24px;
+    }
+    h2 {
+      font-size: 17px;
+      border-bottom: 1px solid #999;
+      padding-bottom: 4px;
+      margin: 28px 0 12px;
+    }
+    h3 {
+      font-size: 15px;
+      margin: 20px 0 8px;
+    }
+    p, li {
+      font-size: 14px;
+      margin: 0 0 10px;
+    }
+    ul, ol {
+      padding-left: 24px;
+    }
+    .figure {
+      margin: 16px 0;
+      text-align: center;
+    }
+    .figure img {
+      max-width: 100%;
+      border: 1px solid #ccc;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin: 12px 0;
+    }
+    th, td {
+      border: 1px solid #bbb;
+      padding: 5px 7px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f0f0f0;
+      font-weight: bold;
+    }
+    td {
+      font-variant-numeric: tabular-nums;
+    }
+    code {
+      font-family: "Courier New", Courier, monospace;
+      font-size: 13px;
+      background: #f5f5f5;
+      padding: 1px 4px;
+    }
+    pre {
+      font-family: "Courier New", Courier, monospace;
+      font-size: 12px;
+      background: #f8f8f8;
+      border: 1px solid #ddd;
+      padding: 12px 16px;
+      margin: 12px 0;
+      overflow-x: auto;
+      line-height: 1.5;
+    }
+    .config-table {
+      width: auto;
+      margin: 12px 0;
+    }
+    .config-table td:first-child {
+      font-weight: bold;
+      white-space: nowrap;
+      padding-right: 16px;
+    }
+    .highlight-box {
+      background: #e8f5e9;
+      border: 2px solid #2e7d32;
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin: 16px 0;
+    }
+    .highlight-box p {
+      margin: 0;
+    }
+    .warning-box {
+      background: #fff3e0;
+      border: 2px solid #e65100;
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin: 16px 0;
+    }
+    .warning-box p {
+      margin: 0;
+    }
+    .research-box {
+      background: #e3f2fd;
+      border: 2px solid #1565c0;
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin: 16px 0;
+    }
+    .research-box p {
+      margin: 0;
+    }
+    hr.appendix {
+      border: none;
+      border-top: 2px solid #333;
+      margin: 36px 0 24px;
+    }
+    .phase-header {
+      background: #f5f5f5;
+      border-left: 4px solid #1565c0;
+      padding: 8px 12px;
+      margin: 20px 0 12px;
+      font-size: 15px;
+      font-weight: bold;
+    }
+    .timeline-table td:first-child {
+      font-weight: bold;
+      white-space: nowrap;
+      width: 100px;
+    }
+    .risk-high { color: #c44e52; font-weight: bold; }
+    .risk-med { color: #e65100; font-weight: bold; }
+    .risk-low { color: #2e7d32; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Research Plan: Elastic GPU Inference Serving<br>via Container-Isolated Tensor Parallelism</h1>
+    <p class="subtitle">
+      Direction B &middot; Building on Exp1 + Exp2 Results<br>
+      Draft 2026-04-03 (related work updated)
+    </p>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 1: MOTIVATION                                        -->
+    <!-- ============================================================ -->
+
+    <h2>1. Motivation</h2>
+
+    <p>Experiments 1 and 2 established the communication foundation: vLLM&rsquo;s
+       DockerDistributedExecutor can run per-GPU worker containers with full NVLink
+       bandwidth recovery via NCCL&rsquo;s cuMem VMM API. The remaining ~10% TPOT gap
+       is due to vLLM&rsquo;s custom allreduce kernel using <code>cudaIpcMemHandle</code>
+       (an engineering fix, not a research problem).</p>
+
+    <p>With <b>zero-overhead container isolation</b> proven, the question becomes:
+       <i>what can we do with individually manageable GPU containers that we cannot
+       do with a monolithic multi-GPU process?</i></p>
+
+    <div class="highlight-box">
+      <p><b>Thesis:</b> Per-GPU container isolation enables <b>elastic tensor-parallel
+         inference</b> &mdash; live TP resizing, fault recovery, and GPU time-sharing &mdash;
+         capabilities that are fundamentally impossible with the conventional
+         multiprocess executor model where all GPUs share a single process lifetime.</p>
+    </div>
+
+    <h3>1.1 What Container Isolation Enables</h3>
+
+    <table>
+      <thead>
+        <tr><th>Capability</th><th>Monolithic MP</th><th>Container Backend</th><th>Why It Matters</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Independent GPU lifecycle</b></td>
+          <td style="background:#ffebee">All GPUs share one process; any change requires full restart</td>
+          <td style="background:#e8f5e9">Add/remove individual GPU containers at runtime</td>
+          <td>Foundation for all elastic operations</td>
+        </tr>
+        <tr>
+          <td><b>Fault isolation</b></td>
+          <td style="background:#ffebee">One GPU crash kills the entire serving process</td>
+          <td style="background:#e8f5e9">Crashed container can be restarted independently</td>
+          <td>Availability SLA for production deployments</td>
+        </tr>
+        <tr>
+          <td><b>Live TP resizing</b></td>
+          <td style="background:#ffebee">Impossible &mdash; TP degree is fixed at startup</td>
+          <td style="background:#e8f5e9">Scale TP=2 &rarr; TP=4 by adding containers + repartitioning</td>
+          <td>Adapt to load without service interruption</td>
+        </tr>
+        <tr>
+          <td><b>GPU time-sharing</b></td>
+          <td style="background:#ffebee">GPU is locked to one model for the process lifetime</td>
+          <td style="background:#e8f5e9">Swap containers on/off a GPU for multi-tenant serving</td>
+          <td>GPU utilization in multi-model deployments</td>
+        </tr>
+        <tr>
+          <td><b>Heterogeneous mixing</b></td>
+          <td style="background:#ffebee">All GPUs must be identical (same CUDA context)</td>
+          <td style="background:#e8f5e9">Different GPU types can join the same TP group (if sharding supports it)</td>
+          <td>Utilize mixed GPU fleets</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>1.2 Why This Is a Research Problem</h3>
+
+    <p>None of the above capabilities are straightforward to implement. The key
+       challenges are:</p>
+
+    <ol>
+      <li><b>NCCL communicator rebuild:</b> NCCL communicators are created once at
+          initialization with a fixed set of ranks. Adding or removing a rank requires
+          <code>ncclCommAbort()</code> on all participants and a full
+          <code>ncclCommInitRank()</code> with the new world size. This is a
+          <b>collective operation</b> &mdash; all surviving ranks must participate,
+          and the new communicator must be established before inference can resume.</li>
+
+      <li><b>Model shard redistribution:</b> When TP degree changes (e.g., TP=2 &rarr;
+          TP=4), model weights must be re-sharded and redistributed. This requires
+          either (a) re-loading from disk/checkpoint on each new shard, or (b)
+          live weight transfer from existing shards to new ones via NCCL or CUDA IPC.</li>
+
+      <li><b>In-flight request draining:</b> During TP resize or fault recovery,
+          in-flight requests in the scheduler&rsquo;s continuous batching loop must be
+          handled. Options: drain and re-enqueue, speculative continuation on
+          surviving ranks, or request-level checkpointing.</li>
+
+      <li><b>KV cache invalidation:</b> TP degree change invalidates the entire
+          KV cache (different head partitioning). All in-progress sequences must be
+          re-prefilled on the new TP group. Minimizing this cost is critical for
+          live resize latency.</li>
+    </ol>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 2: RELATED WORK                                      -->
+    <!-- ============================================================ -->
+
+    <h2>2. Related Work</h2>
+
+    <h3>2.1 LLM Serving Systems</h3>
+
+    <table>
+      <thead>
+        <tr><th>System</th><th>Approach</th><th>Limitations</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>vLLM (current)</b></td>
+          <td>Fixed TP at startup; MP or Ray executor; no fault recovery</td>
+          <td>Any GPU failure kills the entire serving process; no dynamic scaling</td>
+        </tr>
+        <tr>
+          <td><b>DeepSpeed-MII / FastGen</b></td>
+          <td>Replica-level scaling (add/remove whole model instances)</td>
+          <td>TP degree is fixed per replica; no intra-replica elasticity</td>
+        </tr>
+        <tr>
+          <td><b>Orca / Sarathi</b></td>
+          <td>Continuous batching optimizations</td>
+          <td>Orthogonal &mdash; improves throughput but not elasticity</td>
+        </tr>
+        <tr>
+          <td><b>SpotServe (ASPLOS &rsquo;24)</b></td>
+          <td>Preemption-aware serving on spot instances; parallelism reconfiguration</td>
+          <td>Focuses on instance-level preemption, not GPU-level; requires model checkpoint per config; no per-GPU isolation</td>
+        </tr>
+        <tr>
+          <td><b>Llumnix (OSDI &rsquo;24)</b></td>
+          <td>Live migration of LLM requests across instances</td>
+          <td>Migrates requests, not GPU workers; TP degree remains fixed</td>
+        </tr>
+        <tr>
+          <td><b>DistServe / Splitwise</b></td>
+          <td>Disaggregated prefill and decode</td>
+          <td>Orthogonal &mdash; different GPUs for prefill vs decode, but fixed allocation</td>
+        </tr>
+        <tr>
+          <td><b>AlpaServe (OSDI &rsquo;23)</b></td>
+          <td>Statistical multiplexing of model parallelism strategies</td>
+          <td>Chooses parallelism at placement time; no live resizing or per-GPU containers</td>
+        </tr>
+        <tr>
+          <td><b>Tetriinfer (MLSys &rsquo;24)</b></td>
+          <td>Packing multiple models on shared GPUs</td>
+          <td>Spatial sharing, not TP elasticity; all models run in same process/container</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>2.2 GPU Container Isolation and NCCL Communication</h3>
+
+    <p>The central technical problem of this work is achieving <b>high-bandwidth GPU-GPU
+       communication in per-GPU-isolated containers</b>. The industry-wide status quo
+       can be categorized into three camps:</p>
+
+    <h4>Camp 1: Sacrifice Isolation (Industry Standard)</h4>
+
+    <p>The dominant approach gives all GPUs to a single container (or uses
+       <code>--ipc=host --network=host</code> with all GPUs visible), providing full
+       NCCL bandwidth but no isolation:</p>
+
+    <ul>
+      <li><b>Kubernetes nvidia-device-plugin:</b> Assigns GPUs to pods but relies on
+          <code>hostIPC: true</code> and all GPUs visible for multi-GPU NCCL jobs.
+          The <a href="https://github.com/NVIDIA/k8s-device-plugin">device plugin</a>
+          has no mechanism to expose topology without exposing all GPUs.</li>
+      <li><b>Cloud providers (AWS EKS, GCP GKE, Azure AKS):</b> All use the
+          all-GPUs-in-one-container model for distributed training/serving on
+          p4d/p5, A3, NDv4/NDv5 instances.</li>
+      <li><b>PyTorch Elastic (torchrun):</b> Supports elastic membership at the
+          <i>node</i> level (add/remove machines), but within a node all GPUs share
+          one process group. No per-GPU container isolation.</li>
+      <li><b>Ray + vLLM:</b> Ray workers are OS processes, not containers.
+          GPU isolation is via <code>CUDA_VISIBLE_DEVICES</code> but processes share
+          IPC/network namespace. NCCL sees all GPUs via shared <code>/dev/nvidia*</code>.</li>
+    </ul>
+
+    <h4>Camp 2: Accept Performance Loss</h4>
+
+    <p>Per-GPU container isolation is achievable but forces NCCL to fall back to
+       TCP socket transport:</p>
+
+    <ul>
+      <li><b>Our exp1 <code>single_visible_gpu</code> variant:</b> Each container sees
+          one GPU with private IPC. NCCL detects <code>nNodes=N, localRanks=1</code>
+          and uses <code>NET/Socket/2</code> transport. Result: <b>2&ndash;10&times;
+          TPOT degradation</b> (e.g., 245 ms vs 26 ms for Qwen3-14B TP=4).</li>
+      <li><b>NVIDIA MIG (Multi-Instance GPU):</b> Hardware partitioning that
+          <i>explicitly disables</i> P2P between GPU instances. NCCL across MIG
+          slices uses host-staged SHM at best, TCP at worst.</li>
+      <li><b>Singularity/Apptainer (HPC):</b> Uses bind-mount isolation rather than
+          Linux namespaces. GPUs are visible via host device files, so NCCL works,
+          but this provides <i>no security isolation</i>.</li>
+    </ul>
+
+    <h4>Camp 3: Emerging Official Support (Not Yet Deployed)</h4>
+
+    <ul>
+      <li><b>NVIDIA IMEX Daemon (CUDA 12.4+):</b> A kernel-level mechanism providing
+          <code>/dev/nvidia-caps-imex-channels</code> for cross-container GPU memory
+          exchange. This is architecturally complementary to our cuMem approach &mdash;
+          NVIDIA is building official infrastructure for the same problem space.
+          However, it requires a specific kernel module, is not yet widely deployed,
+          and its documentation does not address the per-GPU container isolation use
+          case explicitly. The IMEX approach works at the driver level, while our
+          cuMem VMM + UDS approach works at the NCCL transport level.</li>
+      <li><b>NVIDIA DRA (Dynamic Resource Allocation) plugin for Kubernetes:</b>
+          A next-generation device plugin using Kubernetes&rsquo; DRA framework.
+          Supports finer-grained GPU resource claims but does not address
+          NCCL transport selection or topology exposure.</li>
+    </ul>
+
+    <h3>2.3 NCCL Internals: Three Gates for Intra-Node Transport</h3>
+
+    <p>Through source-level analysis of NCCL (v2.21+), we identified three
+       independent checks that <i>all</i> must pass for NCCL to select P2P or SHM
+       transport instead of falling back to TCP:</p>
+
+    <table>
+      <thead>
+        <tr><th>Gate</th><th>What NCCL Checks</th><th>What Breaks It</th><th>Fix</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>1. hostHash</b></td>
+          <td><code>hash(hostname + /proc/sys/kernel/random/boot_id)</code>
+              &mdash; computed in <code>getHostHash()</code> (<code>src/misc/utils.cc</code>)</td>
+          <td>Different container hostnames produce different hashes, making NCCL
+              treat containers as separate nodes</td>
+          <td><code>NCCL_HOSTID=&lt;same_value&gt;</code> replaces the
+              entire hash input string</td>
+        </tr>
+        <tr>
+          <td><b>2. shmDev</b></td>
+          <td><code>stat("/dev/shm").st_dev</code> &mdash; the device ID of the
+              tmpfs mount backing <code>/dev/shm</code></td>
+          <td>Each container gets its own tmpfs with a unique device ID</td>
+          <td>Mount a shared <code>/dev/shm</code> volume
+              (<code>--volume /dev/shm:/dev/shm</code>)</td>
+        </tr>
+        <tr>
+          <td><b>3. IPC socket</b></td>
+          <td>NCCL uses abstract Unix domain sockets for P2P/SHM setup
+              handshakes; abstract UDS are scoped to the <b>network namespace</b></td>
+          <td>Separate network namespaces prevent cross-container UDS connections</td>
+          <td><code>--network=host</code>, <b>or</b>
+              <code>NCCL_IPC_USE_ABSTRACT_SOCKET=0</code> + bind-mount a
+              shared filesystem socket directory</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>These three gates are <b>undocumented as a set</b> in NCCL&rsquo;s official
+       documentation. Our contribution is identifying them through source analysis
+       and demonstrating that satisfying all three, combined with
+       <code>NCCL_CUMEM_ENABLE=1</code>, recovers full NVLink bandwidth in
+       per-GPU containers.</p>
+
+    <h3>2.4 NCCL cuMem VMM Transport Path</h3>
+
+    <p>The cuMem VMM API (CUDA 12.2+) provides a fundamentally different IPC mechanism
+       from legacy <code>cudaIpcMemHandle</code>:</p>
+
+    <table>
+      <thead>
+        <tr><th>Aspect</th><th>Legacy cudaIPC</th><th>cuMem VMM</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Handle type</b></td>
+          <td>Opaque 64-byte struct, shared via IPC namespace</td>
+          <td>POSIX file descriptor, shared via <code>sendmsg() + SCM_RIGHTS</code></td>
+        </tr>
+        <tr>
+          <td><b>Namespace requirement</b></td>
+          <td>Shared IPC namespace (<code>--ipc=host</code>)</td>
+          <td>Shared network namespace (for abstract UDS) or filesystem UDS</td>
+        </tr>
+        <tr>
+          <td><b>Peer GPU visibility</b></td>
+          <td>Both GPUs must be in <code>CUDA_VISIBLE_DEVICES</code></td>
+          <td>Peer GPU can be invisible; driver resolves the mapping via bus ID</td>
+        </tr>
+        <tr>
+          <td><b>NCCL code path</b></td>
+          <td><code>P2P_IPC</code> subtype in <code>transport/p2p.cc</code></td>
+          <td><code>P2P_CUMEM</code> subtype; enabled by <code>NCCL_CUMEM_ENABLE=1</code></td>
+        </tr>
+        <tr>
+          <td><b>Container isolation</b></td>
+          <td>Incompatible with per-GPU isolation (requires shared IPC + all GPUs visible)</td>
+          <td><b>Compatible:</b> only needs shared network namespace + topology exposure</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>The cuMem path is the key mechanism that enables our approach. With
+       <code>NCCL_CUMEM_ENABLE=1</code>, NCCL&rsquo;s <code>p2pCanConnect()</code>
+       proceeds even when <code>busIdToCudaDev()</code> returns &minus;1 for the
+       peer GPU (i.e., the peer is not in <code>CUDA_VISIBLE_DEVICES</code>).
+       The driver resolves the physical NVLink/PCIe path internally.</p>
+
+    <h3>2.5 Related NCCL Environment Variables</h3>
+
+    <table>
+      <thead>
+        <tr><th>Variable</th><th>Effect</th><th>Relevance</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>NCCL_CUMEM_ENABLE=1</code></td>
+          <td>Enable cuMem VMM API for P2P and SHM transports</td>
+          <td><b>Critical</b> &mdash; enables P2P with invisible peer GPUs</td>
+        </tr>
+        <tr>
+          <td><code>NCCL_HOSTID</code></td>
+          <td>Override hostname+boot_id in hostHash computation</td>
+          <td><b>Critical</b> &mdash; makes containers appear as same node</td>
+        </tr>
+        <tr>
+          <td><code>NCCL_IPC_USE_ABSTRACT_SOCKET=0</code></td>
+          <td>Use filesystem-based UDS instead of abstract UDS</td>
+          <td>Alternative to <code>--network=host</code> for gate&nbsp;3</td>
+        </tr>
+        <tr>
+          <td><code>NCCL_P2P_LEVEL</code></td>
+          <td>LOC/NVL/NVB/PIX/PXB/PHB/SYS (default PXB)</td>
+          <td>Controls maximum PCI distance for P2P</td>
+        </tr>
+        <tr>
+          <td><code>NCCL_SHM_DISABLE</code></td>
+          <td>Disable SHM transport entirely</td>
+          <td>Useful for isolating P2P vs SHM performance</td>
+        </tr>
+        <tr>
+          <td><code>NCCL_NET_DISABLE_INTRA=1</code></td>
+          <td>Disable NET transport for intra-node communication</td>
+          <td>Forces P2P/SHM selection for debugging</td>
+        </tr>
+        <tr>
+          <td><code>NCCL_TOPO_FILE</code></td>
+          <td>Provide pre-built topology XML</td>
+          <td>Potential alternative to <code>NVIDIA_VISIBLE_DEVICES=all</code>
+              for topology exposure</td>
+        </tr>
+        <tr>
+          <td><code>NVIDIA_VISIBLE_DEVICES</code></td>
+          <td>Driver-level GPU visibility (distinct from <code>CUDA_VISIBLE_DEVICES</code>)</td>
+          <td><b>Critical</b> &mdash; must be <code>all</code> for NCCL
+              topology detection, even if <code>CUDA_VISIBLE_DEVICES</code> restricts
+              to one GPU</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>2.6 Academic Work on GPU Sharing and Multi-Tenancy</h3>
+
+    <table>
+      <thead>
+        <tr><th>Paper</th><th>Venue</th><th>Approach</th><th>Relation to Our Work</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Gandiva</b></td>
+          <td>OSDI &rsquo;18</td>
+          <td>GPU time-slicing for DL training; migrate jobs between GPUs</td>
+          <td>Shares the per-GPU lifecycle goal; but uses time-slicing, not container isolation; no NCCL awareness</td>
+        </tr>
+        <tr>
+          <td><b>AntMan</b></td>
+          <td>OSDI &rsquo;20</td>
+          <td>Co-location of DL jobs on GPUs with dynamic memory management</td>
+          <td>Multi-tenant GPU sharing; orthogonal &mdash; focuses on memory, not communication isolation</td>
+        </tr>
+        <tr>
+          <td><b>PipeSwitch</b></td>
+          <td>OSDI &rsquo;20</td>
+          <td>Fast context switching between DL models on same GPU</td>
+          <td>Shares GPU time-sharing goal; single-GPU scope, no multi-GPU TP or NCCL</td>
+        </tr>
+        <tr>
+          <td><b>Paella</b></td>
+          <td>SOSP &rsquo;23</td>
+          <td>Automated parallelism for serving multiple DNN models</td>
+          <td>Static parallelism planning; no live resizing or per-GPU container isolation</td>
+        </tr>
+        <tr>
+          <td><b>SpotServe</b></td>
+          <td>ASPLOS &rsquo;24</td>
+          <td>Preemption-aware serving; parallelism reconfiguration on spot eviction</td>
+          <td>Closest to our TP resize goal, but operates at <i>instance</i> level (add/remove whole machines); requires pre-computed checkpoints per config; no per-GPU containers</td>
+        </tr>
+        <tr>
+          <td><b>Llumnix</b></td>
+          <td>OSDI &rsquo;24</td>
+          <td>Live migration of LLM inference requests between instances</td>
+          <td>Migrates KV cache across instances; complementary but orthogonal &mdash; TP degree remains fixed</td>
+        </tr>
+        <tr>
+          <td><b>ServerlessLLM</b></td>
+          <td>OSDI &rsquo;24</td>
+          <td>Fast checkpoint loading for serverless LLM inference</td>
+          <td>Reduces model loading time (useful for our recovery path); does not address TP elasticity or GPU isolation</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>2.7 Positioning Summary</h3>
+
+    <div class="research-box">
+      <p><b>Gap:</b> No existing system, framework, or published technique achieves
+         <b>GPU-granularity elastic tensor parallelism</b> with per-GPU container
+         isolation AND high-bandwidth interconnect. The entire ecosystem either
+         (a)&nbsp;sacrifices isolation for performance, (b)&nbsp;accepts catastrophic
+         bandwidth loss (2&ndash;10&times;) under isolation, or (c)&nbsp;operates at
+         instance/node granularity rather than GPU granularity.</p>
+      <p style="margin-top:10px"><b>Our contribution is two-fold:</b></p>
+      <ul style="margin:6px 0 0 0">
+        <li><b>Mechanism:</b> Identifying the three NCCL gates (hostHash, shmDev,
+            IPC&nbsp;socket) and demonstrating that <code>NCCL_CUMEM_ENABLE=1</code>
+            combined with proper container configuration recovers full NVLink/PCIe
+            bandwidth under per-GPU isolation &mdash; a configuration that is
+            <b>undocumented</b> in NCCL, NVIDIA, or Kubernetes documentation.</li>
+        <li><b>Application:</b> Using this mechanism to enable fault recovery,
+            live TP resizing, and elastic multi-model GPU scheduling &mdash;
+            capabilities that are impossible with the conventional monolithic
+            multi-GPU process model.</li>
+      </ul>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 3: PROPOSED EXPERIMENTS                               -->
+    <!-- ============================================================ -->
+
+    <h2>3. Proposed Experiments</h2>
+
+    <p>Three experiments, each building on the previous, culminating in a prototype
+       elastic serving system.</p>
+
+    <!-- EXP3 -->
+    <div class="phase-header">Exp3: Single-GPU Fault Recovery</div>
+
+    <p><b>Goal:</b> Kill a GPU worker container mid-inference, restart it, rejoin
+       the NCCL communicator, reload its model shard, and resume serving. Measure
+       recovery time and request impact.</p>
+
+    <h3>3.1 Design</h3>
+
+    <table>
+      <thead>
+        <tr><th>Component</th><th>Mechanism</th><th>Key Challenge</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Failure detection</b></td>
+          <td>Host executor detects container exit or MQ timeout</td>
+          <td>Distinguishing transient MQ delay from true failure</td>
+        </tr>
+        <tr>
+          <td><b>Communicator teardown</b></td>
+          <td><code>ncclCommAbort()</code> on all surviving ranks</td>
+          <td>Must be called on every rank; blocking collective</td>
+        </tr>
+        <tr>
+          <td><b>Container restart</b></td>
+          <td>Host executor launches replacement container with same rank/GPU</td>
+          <td>New container must join NCCL init with existing ranks</td>
+        </tr>
+        <tr>
+          <td><b>Communicator rebuild</b></td>
+          <td><code>ncclCommInitRank()</code> with same world_size, new unique ID</td>
+          <td>All ranks must synchronize; new container needs the <code>ncclUniqueId</code></td>
+        </tr>
+        <tr>
+          <td><b>Model reload</b></td>
+          <td>New container loads its shard from HF cache (already mounted)</td>
+          <td>Model loading time dominates recovery latency</td>
+        </tr>
+        <tr>
+          <td><b>Request handling</b></td>
+          <td>Scheduler pauses dispatch; in-flight requests drain or re-enqueue</td>
+          <td>KV cache for in-flight sequences is lost on the failed rank</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>3.2 Metrics</h3>
+
+    <ul>
+      <li><b>Recovery latency:</b> Wall time from container death to first successful
+          inference on the rebuilt TP group (target: &lt;30s for 4B model, &lt;60s for 14B)</li>
+      <li><b>Request impact:</b> Number of requests that must be re-prefilled
+          (all in-flight sequences lose their KV cache on the failed rank)</li>
+      <li><b>Throughput dip:</b> Duration and depth of the throughput drop during recovery</li>
+      <li><b>Correctness:</b> Output quality is identical to a fresh start
+          (bitwise NCCL reproducibility is not guaranteed, but statistical equivalence)</li>
+    </ul>
+
+    <h3>3.3 Prototype Implementation Sketch</h3>
+
+    <pre>
+# In docker_executor.py — new recovery path
+
+class DockerDistributedExecutor:
+
+    def _detect_worker_failure(self, rank: int) -> bool:
+        """Check if worker container is still alive."""
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}",
+             self.container_ids[rank]],
+            capture_output=True, text=True)
+        return result.stdout.strip() != "true"
+
+    def _recover_failed_worker(self, failed_rank: int):
+        """Rebuild the TP group after a single-GPU failure."""
+        # 1. Signal all surviving workers to abort NCCL communicator
+        self._broadcast_abort_signal()
+
+        # 2. Wait for surviving workers to confirm abort
+        self._wait_for_abort_ack(timeout=10)
+
+        # 3. Generate new ncclUniqueId
+        new_nccl_id = self._generate_nccl_unique_id()
+
+        # 4. Launch replacement container for failed_rank
+        self._launch_worker_container(
+            rank=failed_rank,
+            nccl_unique_id=new_nccl_id)
+
+        # 5. Signal surviving workers to reinitialize with new ID
+        self._broadcast_reinit_signal(new_nccl_id)
+
+        # 6. Wait for all workers (including replacement) to complete
+        #    NCCL init + model load
+        self._wait_for_ready(timeout=120)
+
+        # 7. Resume scheduler — all in-flight requests re-prefilled
+        self._scheduler_resume()</pre>
+
+    <h3>3.4 Test Protocol</h3>
+
+    <ol>
+      <li>Start vLLM with DockerBE + CUMEM isolation, TP=2 (or TP=4), Qwen3-4B</li>
+      <li>Run sustained load (10 req/s ShareGPT) for 60s to reach steady state</li>
+      <li><code>docker kill &lt;worker_rank1_container&gt;</code> at t=60s</li>
+      <li>Measure time until serving resumes (first successful completion after kill)</li>
+      <li>Compare output quality: same prompts before and after recovery</li>
+      <li>Repeat 5 times for statistical significance</li>
+    </ol>
+
+    <div class="warning-box">
+      <p><b>Open question:</b> Should surviving workers continue serving at reduced TP
+         during recovery? For TP=4 &rarr; TP=3, this would require dynamic TP support
+         (non-power-of-2 TP is not standard). Alternative: pause all serving during
+         recovery (simpler, but higher availability impact).</p>
+    </div>
+
+    <!-- EXP4 -->
+    <div class="phase-header">Exp4: Live TP Resizing</div>
+
+    <p><b>Goal:</b> Scale from TP=2 to TP=4 (and back) without stopping the serving
+       process. The model is re-sharded live, new GPU containers join, and inference
+       continues with minimal interruption.</p>
+
+    <h3>4.1 Design</h3>
+
+    <p>Live TP resize is strictly harder than fault recovery because it requires
+       <b>model weight redistribution</b> in addition to communicator rebuild.
+       Two approaches:</p>
+
+    <table>
+      <thead>
+        <tr><th>Approach</th><th>Mechanism</th><th>Pros</th><th>Cons</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>A: Reload from disk</b></td>
+          <td>All containers (old + new) reload their new shard from the HF cache with updated TP config</td>
+          <td>Simple; reuses existing model loading code; no cross-container data transfer</td>
+          <td>Slow (~30s for 14B model); wastes I/O bandwidth; requires all ranks to reload</td>
+        </tr>
+        <tr>
+          <td><b>B: Live shard transfer</b></td>
+          <td>Old TP group sends weight slices to new containers via NCCL or CUDA IPC; new containers only receive their shard</td>
+          <td>Fast (GPU-to-GPU over NVLink); existing shards don&rsquo;t need to reload</td>
+          <td>Complex; requires custom weight redistribution logic; two communicator groups coexist briefly</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p><b>Recommendation:</b> Start with Approach A (reload from disk) for the
+       prototype. It is simpler and establishes the control-plane machinery (communicator
+       rebuild, scheduler pause/resume, KV cache invalidation). Approach B is an
+       optimization for the final system.</p>
+
+    <h3>4.2 Scale-Up Sequence (TP=2 &rarr; TP=4)</h3>
+
+    <ol>
+      <li><b>Trigger:</b> Orchestrator detects sustained high load or receives explicit scale-up command</li>
+      <li><b>Drain:</b> Scheduler stops accepting new requests; in-flight batch completes</li>
+      <li><b>Abort:</b> All existing workers call <code>ncclCommAbort()</code></li>
+      <li><b>Launch:</b> Executor starts 2 new GPU containers (ranks 2, 3)</li>
+      <li><b>Reconfigure:</b> All 4 containers receive new VllmConfig with <code>tensor_parallel_size=4</code></li>
+      <li><b>Init:</b> All 4 containers call <code>ncclCommInitRank(world_size=4)</code></li>
+      <li><b>Reload:</b> Each container loads its 1/4 shard (vs previous 1/2 shard)</li>
+      <li><b>Resume:</b> Scheduler resumes with new TP=4 group; KV cache starts empty</li>
+    </ol>
+
+    <h3>4.3 Scale-Down Sequence (TP=4 &rarr; TP=2)</h3>
+
+    <ol>
+      <li><b>Trigger:</b> Low load detected or explicit scale-down command</li>
+      <li><b>Drain:</b> In-flight batch completes</li>
+      <li><b>Abort:</b> All 4 workers call <code>ncclCommAbort()</code></li>
+      <li><b>Stop:</b> Executor terminates containers for ranks 2, 3</li>
+      <li><b>Reconfigure:</b> Remaining 2 containers receive new VllmConfig with <code>tensor_parallel_size=2</code></li>
+      <li><b>Init:</b> 2 containers call <code>ncclCommInitRank(world_size=2)</code></li>
+      <li><b>Reload:</b> Each container loads its 1/2 shard</li>
+      <li><b>Resume:</b> Scheduler resumes with TP=2; freed GPUs available for other models</li>
+    </ol>
+
+    <h3>4.4 Metrics</h3>
+
+    <ul>
+      <li><b>Resize latency:</b> Wall time from trigger to first inference on new TP group</li>
+      <li><b>Downtime:</b> Duration of zero-throughput window during resize</li>
+      <li><b>KV cache re-prefill cost:</b> Time to re-prefill in-flight sequences after resize</li>
+      <li><b>Throughput trajectory:</b> Time series of req/s and tok/s through the resize event</li>
+      <li><b>Comparison:</b> Resize latency vs. full cold-start of new TP configuration</li>
+    </ul>
+
+    <div class="warning-box">
+      <p><b>Open question:</b> Can we preserve KV cache across TP resize? For TP=2 &rarr; TP=4,
+         each original rank holds attention heads [0..H/2). After resize, rank 0 holds
+         [0..H/4) and rank 2 holds [H/4..H/2). In principle, rank 0 could send the
+         second half of its KV cache to rank 2 via NCCL. This would eliminate re-prefill
+         cost but adds significant implementation complexity. Worth investigating in a
+         later phase.</p>
+    </div>
+
+    <!-- EXP5 -->
+    <div class="phase-header">Exp5: Elastic Scheduling Prototype</div>
+
+    <p><b>Goal:</b> Build a minimal orchestrator that manages a pool of GPUs,
+       dynamically assigns them to inference jobs, and performs live TP resizing
+       based on load signals.</p>
+
+    <h3>5.1 Architecture</h3>
+
+    <pre>
+                         +------------------+
+                         |   Orchestrator   |
+                         |  (load monitor,  |
+                         |   GPU allocator, |
+                         |   resize policy) |
+                         +--------+---------+
+                                  |
+                    +-------------+-------------+
+                    |             |             |
+              +-----+-----+ +-----+-----+ +-----+-----+
+              | vLLM Inst | | vLLM Inst | | vLLM Inst |
+              | Model A   | | Model B   | | Model C   |
+              | TP=2      | | TP=4      | | TP=1      |
+              +--+--+--+--+ +--+--+--+--+ +-----+-----+
+                 |  |          |  |  |  |        |
+              [GPU0][GPU1]  [GPU2][GPU3]      [GPU6]
+                            [GPU4][GPU5]
+    </pre>
+
+    <h3>5.2 Scheduling Policies</h3>
+
+    <table>
+      <thead>
+        <tr><th>Policy</th><th>Trigger</th><th>Action</th><th>Objective</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Load-based scale-up</b></td>
+          <td>Request queue depth &gt; threshold for &gt;T seconds</td>
+          <td>Assign free GPUs to the bottleneck instance; live TP resize</td>
+          <td>Maintain latency SLA</td>
+        </tr>
+        <tr>
+          <td><b>Load-based scale-down</b></td>
+          <td>GPU utilization &lt; threshold for &gt;T seconds</td>
+          <td>Reclaim GPUs from underloaded instance; live TP resize down</td>
+          <td>Free GPUs for other models</td>
+        </tr>
+        <tr>
+          <td><b>Fault recovery</b></td>
+          <td>Container health check failure</td>
+          <td>Restart failed container; NCCL communicator rebuild (exp3)</td>
+          <td>Maximize availability</td>
+        </tr>
+        <tr>
+          <td><b>Priority preemption</b></td>
+          <td>High-priority model request arrives; no free GPUs</td>
+          <td>Scale down low-priority instance to free GPUs; assign to high-priority</td>
+          <td>Multi-tenant SLA differentiation</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>5.3 Evaluation Scenario</h3>
+
+    <p>Simulated multi-model serving on node192 (4 GPUs) or node196 (4 GPUs):</p>
+
+    <ol>
+      <li>Model A starts at TP=2 (GPU 0, 1) serving steady load</li>
+      <li>Load spike on Model A &rarr; orchestrator scales to TP=4 (GPU 0, 1, 2, 3)</li>
+      <li>Model B request arrives &rarr; orchestrator scales A down to TP=2, starts B at TP=2</li>
+      <li>GPU 1 container crashes &rarr; orchestrator recovers Model A</li>
+      <li>Load subsides &rarr; orchestrator scales A to TP=1, frees GPUs</li>
+    </ol>
+
+    <p>Compare against static allocation baseline (each model gets fixed GPUs;
+       crash requires manual restart).</p>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 4: IMPLEMENTATION ROADMAP                            -->
+    <!-- ============================================================ -->
+
+    <h2>4. Implementation Roadmap</h2>
+
+    <table>
+      <thead>
+        <tr><th>Phase</th><th>Deliverable</th><th>Depends On</th><th>Key Files to Modify</th><th>Risk</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Phase 0</b><br>Custom AR fix</td>
+          <td>Port vLLM custom allreduce from <code>cudaIpcMemHandle</code> to cuMem VMM API; eliminate the ~10% TPOT gap</td>
+          <td>Exp2 results</td>
+          <td><code>vllm/distributed/device_communicators/custom_all_reduce.py</code>,
+              <code>custom_all_reduce_utils.py</code>,
+              CUDA kernels in <code>csrc/</code></td>
+          <td class="risk-med">Medium</td>
+        </tr>
+        <tr>
+          <td><b>Phase 1</b><br>NCCL re-init</td>
+          <td>Implement <code>ncclCommAbort()</code> + <code>ncclCommInitRank()</code> cycle in DockerBE; verify NCCL communicator can be rebuilt without restarting containers</td>
+          <td>&mdash;</td>
+          <td><code>docker_executor.py</code>,
+              <code>docker_worker_entrypoint.py</code>,
+              <code>pynccl.py</code></td>
+          <td class="risk-low">Low</td>
+        </tr>
+        <tr>
+          <td><b>Phase 2</b><br>Fault recovery</td>
+          <td>Detect container failure, restart, rejoin communicator, reload model shard, resume serving (exp3)</td>
+          <td>Phase 1</td>
+          <td><code>docker_executor.py</code>,
+              <code>docker_worker_entrypoint.py</code>,
+              <code>scheduler.py</code></td>
+          <td class="risk-med">Medium</td>
+        </tr>
+        <tr>
+          <td><b>Phase 3</b><br>Live TP resize</td>
+          <td>Scale TP up/down by adding/removing containers; model re-sharding from disk (exp4)</td>
+          <td>Phase 2</td>
+          <td><code>docker_executor.py</code>,
+              <code>docker_worker_entrypoint.py</code>,
+              <code>scheduler.py</code>,
+              model loading code</td>
+          <td class="risk-high">High</td>
+        </tr>
+        <tr>
+          <td><b>Phase 4</b><br>Orchestrator</td>
+          <td>Multi-instance GPU scheduler with load-based scaling policies (exp5)</td>
+          <td>Phase 3</td>
+          <td>New: <code>orchestrator.py</code>, <code>gpu_allocator.py</code></td>
+          <td class="risk-high">High</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 5: TECHNICAL DEEP-DIVES                              -->
+    <!-- ============================================================ -->
+
+    <h2>5. Technical Deep-Dives</h2>
+
+    <h3>5.1 NCCL Communicator Lifecycle</h3>
+
+    <p>NCCL communicators are heavyweight objects. Understanding their lifecycle is
+       critical for Phase 1:</p>
+
+    <pre>
+# Normal lifecycle (current vLLM):
+ncclGetUniqueId(&amp;id)           # Rank 0 generates, broadcasts to others
+ncclCommInitRank(&amp;comm, nranks, id, rank)  # All ranks call collectively
+# ... use comm for collectives ...
+ncclCommDestroy(comm)          # Clean shutdown
+
+# Recovery lifecycle (our extension):
+ncclCommAbort(comm)            # Emergency teardown — non-blocking, no sync
+                               # Frees resources even if peers are dead
+# ... restart failed container ...
+ncclGetUniqueId(&amp;new_id)       # Generate fresh ID
+ncclCommInitRank(&amp;new_comm, nranks, new_id, rank)  # All ranks (including replacement)
+# ... resume serving ...</pre>
+
+    <p>Key constraint: <code>ncclCommAbort()</code> must be called on <b>every surviving
+       rank</b>. The failed rank&rsquo;s communicator is implicitly abandoned. After abort,
+       the surviving ranks&rsquo; NCCL state is fully released &mdash; they can
+       <code>ncclCommInitRank()</code> again.</p>
+
+    <h3>5.2 Scheduler Pause/Resume Protocol</h3>
+
+    <p>During recovery or resize, the vLLM scheduler must coordinate with the executor:</p>
+
+    <ol>
+      <li><b>Pause:</b> Executor sets a flag; scheduler stops dispatching new batches</li>
+      <li><b>Drain:</b> Currently executing batch completes (or is aborted if the failed rank was involved)</li>
+      <li><b>Recovery:</b> Executor performs NCCL rebuild + model reload</li>
+      <li><b>KV invalidation:</b> All sequences in the scheduler&rsquo;s running queue are moved back to waiting, marked for re-prefill</li>
+      <li><b>Resume:</b> Executor clears the flag; scheduler resumes dispatching</li>
+    </ol>
+
+    <p>The scheduler already has a <code>running</code> &rarr; <code>waiting</code>
+       transition path for preemption (recompute mode). The same mechanism can be
+       reused for post-recovery re-prefill.</p>
+
+    <h3>5.3 Container Launch Optimization</h3>
+
+    <p>Recovery latency is dominated by model loading, not container startup. Potential
+       optimizations:</p>
+
+    <table>
+      <thead>
+        <tr><th>Optimization</th><th>Expected Speedup</th><th>Complexity</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Warm container pool:</b> Pre-launch idle containers that only need NCCL init + model load</td>
+          <td>~2s saved (container startup)</td>
+          <td class="risk-low">Low</td>
+        </tr>
+        <tr>
+          <td><b>Model shard caching:</b> Keep model weights in a tmpfs/ramdisk; mmap instead of loading from SSD</td>
+          <td>~5-10s saved (I/O bound &rarr; memory bound)</td>
+          <td class="risk-low">Low</td>
+        </tr>
+        <tr>
+          <td><b>Live weight transfer:</b> Surviving ranks send the failed rank&rsquo;s shard via NCCL (Approach B)</td>
+          <td>~10-20s saved for large models (NVLink &gt;&gt; SSD)</td>
+          <td class="risk-high">High</td>
+        </tr>
+        <tr>
+          <td><b>Checkpoint-free resume:</b> Store model weights in GPU memory with cuMem; new container maps existing allocation</td>
+          <td>Near-instant shard recovery</td>
+          <td class="risk-high">High (requires cuMem persistence across container restarts)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 6: TESTBED                                           -->
+    <!-- ============================================================ -->
+
+    <h2>6. Testbed Requirements</h2>
+
+    <table class="config-table">
+      <tr><td>Primary testbed</td><td>node192: 2&times; A100-SXM4-40GB (NVLink NV12) &mdash; TP=2 experiments</td></tr>
+      <tr><td>Secondary testbed</td><td>node196: 4&times; NVIDIA A30 (PCIe) &mdash; TP=4 experiments, PCIe validation</td></tr>
+      <tr><td>Models</td><td>Qwen3-4B (fast iteration), Qwen3-8B, Qwen3-14B (stress test)</td></tr>
+      <tr><td>Workload</td><td>ShareGPT 500&ndash;1000 prompts, 5&ndash;20 req/s, sustained for 120s+ per experiment</td></tr>
+      <tr><td>Docker</td><td>27.3.1+ with nvidia runtime, NCCL 2.21+, CUDA 12.4+</td></tr>
+      <tr><td>CUMEM isolation</td><td><code>NCCL_CUMEM_ENABLE=1</code>, <code>NVIDIA_VISIBLE_DEVICES=all</code>,
+          <code>CUDA_VISIBLE_DEVICES=&lt;rank&gt;</code>, <code>network_mode: host</code>,
+          shared <code>/dev/shm</code> (4 GB)</td></tr>
+    </table>
+
+    <div class="warning-box">
+      <p><b>PCIe note:</b> node196 uses PCIe interconnect (no NVLink). CUMEM isolation
+         has been validated on NVLink (node192) but not yet on PCIe. Before starting
+         exp3 on node196, we should first run the exp2 CUMEM isolation benchmark on
+         node196 to confirm PCIe P2P recovery. If cuMem does not work over PCIe
+         (likely &mdash; PCIe P2P uses different driver paths), we may need to fall back to
+         SHM transport on node196, which still provides ~10&times; better bandwidth
+         than TCP sockets.</p>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 7: PAPER OUTLINE                                     -->
+    <!-- ============================================================ -->
+
+    <h2>7. Paper Outline</h2>
+
+    <p><i>Working title: &ldquo;Elastic GPU Inference Serving via Container-Isolated
+       Tensor Parallelism&rdquo;</i></p>
+
+    <table>
+      <thead>
+        <tr><th>Section</th><th>Content</th><th>Source</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>1. Introduction</b></td>
+          <td>LLM serving requires multi-GPU TP; current systems use monolithic
+              processes that prevent elasticity; container isolation is the enabling
+              mechanism</td>
+          <td>Motivation (this document)</td>
+        </tr>
+        <tr>
+          <td><b>2. Background</b></td>
+          <td>NCCL transport overview; CUDA IPC vs cuMem VMM; Docker namespace
+              isolation; vLLM architecture</td>
+          <td>Exp2 analysis report</td>
+        </tr>
+        <tr>
+          <td><b>3. Zero-Overhead Container Isolation</b></td>
+          <td>cuMem enables NVLink P2P across per-GPU containers; 99.5&ndash;100.1%
+              bandwidth recovery; end-to-end vLLM validation</td>
+          <td>Exp1 + Exp2 results</td>
+        </tr>
+        <tr>
+          <td><b>4. Fault Recovery</b></td>
+          <td>NCCL communicator rebuild; container restart; model shard reload;
+              scheduler pause/resume; recovery latency characterization</td>
+          <td>Exp3 results</td>
+        </tr>
+        <tr>
+          <td><b>5. Live TP Resizing</b></td>
+          <td>Scale up/down by adding/removing GPU containers; weight redistribution;
+              KV cache handling; downtime characterization</td>
+          <td>Exp4 results</td>
+        </tr>
+        <tr>
+          <td><b>6. Elastic Scheduling</b></td>
+          <td>Multi-model GPU orchestrator; load-based policies; multi-tenant
+              evaluation</td>
+          <td>Exp5 results</td>
+        </tr>
+        <tr>
+          <td><b>7. Evaluation</b></td>
+          <td>Recovery time, resize latency, throughput trajectory, comparison
+              with static allocation and cold restart</td>
+          <td>Exp3&ndash;5 results</td>
+        </tr>
+        <tr>
+          <td><b>8. Related Work</b></td>
+          <td>SpotServe, Llumnix, DistServe, AlpaServe, ServerlessLLM, DeepSpeed-MII,
+              Gandiva, PipeSwitch; Kubernetes GPU scheduling; NVIDIA IMEX daemon;
+              NCCL cuMem VMM transport analysis</td>
+          <td>Section 2 of this document + NCCL source analysis</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="highlight-box">
+      <p><b>Core contribution:</b> The first system that achieves GPU-granularity
+         elastic tensor parallelism for LLM inference, enabled by zero-overhead
+         container isolation with cuMem-based NVLink P2P recovery. The paper tells a
+         complete story from mechanism (container isolation + communication recovery)
+         to application (fault recovery + live scaling + elastic scheduling).</p>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 8: RISKS AND MITIGATIONS                             -->
+    <!-- ============================================================ -->
+
+    <h2>8. Risks and Mitigations</h2>
+
+    <table>
+      <thead>
+        <tr><th>Risk</th><th>Severity</th><th>Mitigation</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>ncclCommAbort()</code> hangs or leaks resources</td>
+          <td class="risk-med">Medium</td>
+          <td>NCCL 2.18+ guarantees non-blocking abort; test with intentional container kills</td>
+        </tr>
+        <tr>
+          <td>Model reload time dominates recovery (60s+ for 70B models)</td>
+          <td class="risk-high">High</td>
+          <td>Scope paper to 4B&ndash;14B models; mention 70B as future work; explore weight transfer optimization</td>
+        </tr>
+        <tr>
+          <td>cuMem does not work on PCIe (only NVLink)</td>
+          <td class="risk-med">Medium</td>
+          <td>Validate on node196 first; fall back to SHM transport which still enables fault recovery/resize (just slower collectives)</td>
+        </tr>
+        <tr>
+          <td>KV cache invalidation cost makes live resize impractical for long sequences</td>
+          <td class="risk-med">Medium</td>
+          <td>Quantify re-prefill cost; explore KV cache transfer as optimization; note that cold restart also invalidates KV</td>
+        </tr>
+        <tr>
+          <td>vLLM scheduler not designed for pause/resume</td>
+          <td class="risk-low">Low</td>
+          <td>Scheduler already supports preemption (recompute mode); pause/resume is simpler</td>
+        </tr>
+        <tr>
+          <td>Custom allreduce fix (Phase 0) is too complex</td>
+          <td class="risk-low">Low</td>
+          <td>Can run with <code>--disable-custom-all-reduce</code> for all experiments; the ~10% gap is documented and orthogonal</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 9: IMMEDIATE NEXT STEPS                              -->
+    <!-- ============================================================ -->
+
+    <h2>9. Immediate Next Steps</h2>
+
+    <ol>
+      <li><b>Validate CUMEM on PCIe (node196):</b> Run exp2 NCCL benchmark on node196
+          to confirm cuMem P2P works on PCIe topology. If not, characterize SHM
+          performance as the fallback baseline for elastic experiments.</li>
+
+      <li><b>NCCL communicator rebuild PoC:</b> Write a minimal standalone script
+          (outside vLLM) that creates 2 NCCL communicators in Docker containers,
+          performs an all-reduce, aborts one, restarts it, rebuilds the communicator,
+          and performs another all-reduce. This validates the core NCCL re-init
+          mechanism before touching vLLM code.</li>
+
+      <li><b>Instrument docker_executor.py:</b> Add failure detection hooks
+          (container health monitoring) and the abort/reinit control path. This is
+          the minimal foundation for exp3.</li>
+
+      <li><b>Run exp3 on node192:</b> First fault recovery experiment with Qwen3-4B TP=2.
+          Measure recovery latency breakdown (detection, abort, restart, NCCL init,
+          model load, scheduler resume).</li>
+    </ol>
+
+    <hr class="appendix">
+
+    <h2>Appendix A: NCCL cuMem API Reference</h2>
+
+    <p>Key CUDA driver API calls used by NCCL&rsquo;s cuMem VMM path:</p>
+
+    <table>
+      <thead>
+        <tr><th>API</th><th>Purpose</th><th>Container Requirement</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>cuMemCreate()</code></td>
+          <td>Allocate physical GPU memory (not mapped to VA yet)</td>
+          <td>Local GPU must be visible</td>
+        </tr>
+        <tr>
+          <td><code>cuMemExportToShareableHandle()</code></td>
+          <td>Export allocation as POSIX FD</td>
+          <td>None (local operation)</td>
+        </tr>
+        <tr>
+          <td><code>sendmsg() + SCM_RIGHTS</code></td>
+          <td>Pass FD to peer process</td>
+          <td><b>Shared network namespace</b> (abstract UDS)</td>
+        </tr>
+        <tr>
+          <td><code>cuMemImportFromShareableHandle()</code></td>
+          <td>Import FD as allocation handle</td>
+          <td>None (local operation)</td>
+        </tr>
+        <tr>
+          <td><code>cuMemMap()</code></td>
+          <td>Map imported allocation into local VA space</td>
+          <td>None (driver resolves NVLink path)</td>
+        </tr>
+        <tr>
+          <td><code>cuMemSetAccess()</code></td>
+          <td>Grant local GPU permission to access mapped memory</td>
+          <td>None (local operation)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Appendix B: Relationship to Existing Experiments</h2>
+
+    <table>
+      <thead>
+        <tr><th>Experiment</th><th>Question Answered</th><th>Status</th><th>Feeds Into</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Exp1</b></td>
+          <td>Does DockerBE match MP baseline for vLLM serving?</td>
+          <td style="background:#e8f5e9">Complete</td>
+          <td>Establishes that container overhead is negligible</td>
+        </tr>
+        <tr>
+          <td><b>Exp2</b></td>
+          <td>Can per-GPU containers recover NVLink bandwidth?</td>
+          <td style="background:#e8f5e9">Complete</td>
+          <td>Proves isolation + performance is possible; enables exp3&ndash;5</td>
+        </tr>
+        <tr>
+          <td><b>Exp3</b></td>
+          <td>Can we recover from single-GPU failure without full restart?</td>
+          <td style="background:#fff3e0">Planned</td>
+          <td>Core fault tolerance contribution</td>
+        </tr>
+        <tr>
+          <td><b>Exp4</b></td>
+          <td>Can we resize TP live without stopping inference?</td>
+          <td style="background:#fff3e0">Planned</td>
+          <td>Core elasticity contribution</td>
+        </tr>
+        <tr>
+          <td><b>Exp5</b></td>
+          <td>Can an orchestrator dynamically assign GPUs across models?</td>
+          <td style="background:#fff3e0">Planned</td>
+          <td>System-level integration and evaluation</td>
+        </tr>
+      </tbody>
+    </table>
+
+  </main>
+</body>
+</html>
