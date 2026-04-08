@@ -1,0 +1,2294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Research Plan: Fabric-Agnostic Cross-Container GPU Communication</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Times New Roman", "Nimbus Roman", Times, serif;
+      background: #fff;
+      color: #111;
+      line-height: 1.6;
+    }
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 40px 32px 60px;
+    }
+    h1 {
+      font-size: 22px;
+      text-align: center;
+      margin: 0 0 4px;
+      line-height: 1.3;
+    }
+    .subtitle {
+      text-align: center;
+      font-size: 14px;
+      color: #444;
+      margin: 0 0 24px;
+    }
+    h2 {
+      font-size: 17px;
+      border-bottom: 1px solid #999;
+      padding-bottom: 4px;
+      margin: 28px 0 12px;
+    }
+    h3 {
+      font-size: 15px;
+      margin: 20px 0 8px;
+    }
+    h4 {
+      font-size: 14px;
+      margin: 16px 0 6px;
+    }
+    p, li {
+      font-size: 14px;
+      margin: 0 0 10px;
+    }
+    ul, ol {
+      padding-left: 24px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin: 12px 0;
+    }
+    th, td {
+      border: 1px solid #bbb;
+      padding: 5px 7px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f0f0f0;
+      font-weight: bold;
+    }
+    td {
+      font-variant-numeric: tabular-nums;
+    }
+    code {
+      font-family: "Courier New", Courier, monospace;
+      font-size: 13px;
+      background: #f5f5f5;
+      padding: 1px 4px;
+    }
+    pre {
+      font-family: "Courier New", Courier, monospace;
+      font-size: 12px;
+      background: #f8f8f8;
+      border: 1px solid #ddd;
+      padding: 12px 16px;
+      margin: 12px 0;
+      overflow-x: auto;
+      line-height: 1.5;
+    }
+</style>
+</head>
+<body>
+  <main>
+
+    <h1>Research Plan: Fabric-Agnostic Cross-Container<br>GPU Communication Abstraction</h1>
+    <p class="subtitle">
+      Direction C &middot; Building on Exp1 + Exp2 NCCL Isolation Findings<br>
+      v2 &middot; 2026-04-08
+    </p>
+
+<!-- ============================================================ -->
+    <!-- SECTION 1: EXECUTIVE SUMMARY                                -->
+    <!-- ============================================================ -->
+
+    <h2>1. Executive Summary</h2>
+
+    <div style="background:#e3f2fd;border:2px solid #1565c0;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>Core Thesis:</b> Every GPU collective communication library (NCCL, RCCL, HCCL, oneCCL)
+         assumes a <b>shared OS namespace</b> for intra-node GPU-to-GPU communication. Container isolation
+         breaks this assumption universally. We propose <b>XTrans</b> (Cross-container Transport), a
+         fabric-agnostic broker layer that mediates topology discovery and memory handle exchange
+         across container boundaries, enabling any CCL to recover native interconnect bandwidth
+         (NVLink, Infinity Fabric, Xe Link, HCCS/UnifiedBus) without sacrificing per-GPU isolation.</p>
+    </div>
+
+    <p>Our exp1&ndash;2 results proved that NCCL&rsquo;s cuMem VMM path can recover 100% NVLink bandwidth
+       in per-GPU containers on NVIDIA hardware. But this solution is:</p>
+    <ul>
+      <li><b>NVIDIA-only</b> &mdash; relies on NCCL-specific env vars (<code>NCCL_CUMEM_ENABLE</code>,
+          <code>NCCL_HOSTID</code>) and CUDA VMM API</li>
+      <li><b>Fragile</b> &mdash; depends on three undocumented &ldquo;gates&rdquo; (hostHash, shmDev, IPC socket)
+          that could change in any NCCL release</li>
+      <li><b>Not extensible</b> &mdash; NCCL&rsquo;s intra-node transport array is hardcoded; no plugin
+          interface exists for P2P/SHM transports</li>
+    </ul>
+
+    <p>The research question becomes: <i>Can we build a general mechanism that enables
+       high-bandwidth cross-container GPU communication for any vendor&rsquo;s hardware,
+       any CCL, and any container runtime?</i></p>
+
+    <h3>1.1 Why This Direction Is Exciting</h3>
+
+    <p>Unlike the elastic serving direction (Direction B), which applies containers to
+       well-explored problems (TP resizing, fault recovery, live migration), this direction
+       <b>exploits the container boundary itself</b> as a first-class research object:</p>
+
+    <table>
+      <thead>
+        <tr><th>Aspect</th><th>Direction B (Elastic Serving)</th><th>Direction C (This Plan)</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Container role</b></td>
+          <td>Deployment mechanism &mdash; containers are used but not studied</td>
+          <td>Research object &mdash; the container boundary is the core problem</td>
+        </tr>
+        <tr>
+          <td><b>Novelty source</b></td>
+          <td>New application of known techniques (NCCL re-init, weight redistribution)</td>
+          <td>New abstraction &mdash; no prior work on fabric-agnostic cross-container GPU transport</td>
+        </tr>
+        <tr>
+          <td><b>Vendor scope</b></td>
+          <td>NVIDIA only (NCCL + cuMem)</td>
+          <td>Multi-vendor (NVIDIA, AMD, Intel, Huawei, future UALink hardware)</td>
+        </tr>
+        <tr>
+          <td><b>Related work density</b></td>
+          <td>Crowded &mdash; Flying Serving, Gyges, DynamoLLM, Seesaw, LoongServe, etc.</td>
+          <td>Empty &mdash; no published work on this specific problem</td>
+        </tr>
+        <tr>
+          <td><b>Industry relevance</b></td>
+          <td>Useful for vLLM specifically</td>
+          <td>Foundational for cloud-native GPU computing (K8s, serverless GPU, multi-tenant)</td>
+        </tr>
+      </tbody>
+    </table>
+
+<!-- ============================================================ -->
+    <!-- SECTION 2: FEASIBILITY ASSESSMENT                           -->
+    <!-- ============================================================ -->
+
+    <h2>2. Feasibility Assessment</h2>
+
+    <div style="background:#e8f5e9;border:2px solid #2e7d32;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>Verdict: XTrans is a promising and feasible research direction,</b> but only if
+         framed correctly. The supervisor&rsquo;s concern &mdash; &ldquo;if this is simply transplanting
+         cuMem to other platforms, it&rsquo;s useful but not a great research problem&rdquo; &mdash; is valid
+         for a naive framing. The pre-research below identifies what makes XTrans genuinely novel,
+         what the key risks are, and what fallback directions exist.</p>
+    </div>
+
+    <h3>2.1 Key Finding: Vendor IPC Mechanisms Are Fundamentally Divergent</h3>
+
+    <p>The most important finding from pre-research is that <b>each GPU vendor uses a structurally
+       different IPC mechanism</b>, making cross-container GPU communication a non-trivial
+       abstraction problem &mdash; not a simple transplant of cuMem.</p>
+
+    <table>
+      <thead>
+        <tr><th>Vendor</th><th>IPC Mechanism</th><th>Handle Type</th><th>Cross-Container Path</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>NVIDIA</b></td>
+          <td>cuMem VMM: <code>cuMemCreate</code> + <code>cuMemExportToShareableHandle</code></td>
+          <td>POSIX file descriptor</td>
+          <td>FD passing via UDS <code>SCM_RIGHTS</code></td>
+          <td style="color:#2e7d32;font-weight:bold">Proven (our exp2)</td>
+        </tr>
+        <tr>
+          <td><b>NVIDIA (legacy)</b></td>
+          <td><code>cudaIpcGetMemHandle</code></td>
+          <td>Opaque 64-byte blob</td>
+          <td>Requires shared IPC namespace &mdash; <b>no cross-container path</b></td>
+          <td style="color:#c44e52;font-weight:bold">Blocked</td>
+        </tr>
+        <tr>
+          <td><b>AMD (what RCCL uses)</b></td>
+          <td><code>hsa_amd_ipc_memory_create</code> via <code>hipIpcGetMemHandle</code></td>
+          <td>Opaque 32-byte blob (KFD-resolved)</td>
+          <td>Kernel-side resolution via <code>/dev/kfd</code> &mdash; <b>may work across containers</b>
+              if both see same GPU. Needs empirical verification.</td>
+          <td style="color:#e65100;font-weight:bold">Unknown</td>
+        </tr>
+        <tr>
+          <td><b>AMD (HIP VMM)</b></td>
+          <td><code>hipMemCreate</code> + <code>hipMemExportToShareableHandle</code></td>
+          <td>POSIX file descriptor (<code>hipMemHandleTypePosixFileDescriptor</code>)</td>
+          <td>FD passing via UDS <code>SCM_RIGHTS</code> (same as NVIDIA cuMem)</td>
+          <td style="color:#e65100;font-weight:bold">API exists (Beta in HIP 7.x), but RCCL
+              explicitly disables it (<code>ncclIsCuMemSupported()=0</code> on AMD)</td>
+        </tr>
+        <tr>
+          <td><b>AMD (DMA-BUF)</b></td>
+          <td><code>hsa_amd_portable_export_dmabuf</code></td>
+          <td>Linux DMA-BUF file descriptor</td>
+          <td>FD passing via UDS <code>SCM_RIGHTS</code>. RCCL uses this for RDMA
+              <code>ibv_reg_dmabuf_mr</code> but <b>not</b> for P2P IPC.</td>
+          <td style="color:#e65100;font-weight:bold">Kernel support mature; untested for P2P IPC</td>
+        </tr>
+        <tr>
+          <td><b>Intel (Level Zero)</b></td>
+          <td><code>zeMemGetIpcHandle</code></td>
+          <td>DMA-BUF file descriptor (first 4 bytes of opaque <code>ze_ipc_mem_handle_t</code>)</td>
+          <td>Three exchange modes in oneCCL:<br>
+              &bull; <code>pidfd</code> (default): <code>pidfd_getfd()</code> &mdash; breaks across containers<br>
+              &bull; <code>drmfd</code>: DRM PRIME via shared <code>/dev/dri</code> &mdash; breaks across containers<br>
+              &bull; <code>sockets</code>: UDS <code>SCM_RIGHTS</code> &mdash; <b>works across containers</b></td>
+          <td style="color:#2e7d32;font-weight:bold">FD-based; oneCCL <code>sockets</code> mode
+              already demonstrates cross-PID-namespace IPC</td>
+        </tr>
+        <tr>
+          <td><b>Intel Gaudi</b></td>
+          <td>Integrated RoCE v2 RDMA (24 on-chip NIC ports)</td>
+          <td>Network-based (no shared memory IPC)</td>
+          <td>Scale-up uses dedicated RDMA NICs, not host SHM. Could work across containers
+              if RDMA ports are accessible.</td>
+          <td style="color:#2e7d32;font-weight:bold">Architecturally different &mdash; easier case</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div style="background:#fff3e0;border:2px solid #e65100;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>Critical insight:</b> This is <b>not</b> &ldquo;transplanting cuMem.&rdquo; Each vendor
+         has a different IPC substrate (POSIX FD vs opaque blob vs DMA-BUF vs RDMA), different
+         kernel drivers (<code>nvidia-uvm</code> vs <code>/dev/kfd</code> vs <code>/dev/dri</code>),
+         and different CCL gate mechanisms. The research challenge is discovering whether a
+         <b>common broker protocol</b> can unify these divergent mechanisms while preserving
+         native performance. DMA-BUF FDs emerge as a potential universal substrate (available
+         on NVIDIA, AMD, and Intel), but this has never been tested for cross-container GPU P2P.</p>
+    </div>
+
+    <h3>2.2 Will NVIDIA Solve This Themselves?</h3>
+
+    <p><b>No, not in the next 2&ndash;3 years.</b> Pre-research identifies structural reasons:</p>
+
+    <ol>
+      <li><b>IMEX is GB200 NVL72 only.</b> Requires 4th-gen NVSwitches + Grace CPUs + Blackwell GPUs.
+          Does not work on A100, H100, or even B200 DGX without NVSwitch fabric. The vast majority
+          of deployed GPU infrastructure will never run IMEX.</li>
+      <li><b>NVIDIA&rsquo;s container strategy moves toward stronger isolation, not sharing.</b>
+          Confidential Containers, Kata GPU support, namespace-based security &mdash; all point away
+          from making cross-container GPU communication easier.</li>
+      <li><b>NCCL has no intra-node transport plugin interface</b> and shows no signs of adding one.
+          P2P and SHM transports are hardcoded in <code>transport.cc</code>. The plugin API only
+          covers NET (inter-node), Tuner, Profiler, and Env.</li>
+      <li><b>NCCL 2.29 acknowledges the problem but only offers a broken env var toggle.</b>
+          <code>NCCL_IPC_USE_ABSTRACT_SOCKET=0</code> is documented as a workaround for
+          &ldquo;multiple containers in certain situations,&rdquo; but does not reliably work.</li>
+      <li><b>Cloud providers avoid the problem entirely</b> by giving exclusive node access to
+          training jobs. AWS EFA and Azure InfiniBand focus on inter-node RDMA only.</li>
+    </ol>
+
+    <h3>2.3 Is the LD_PRELOAD Approach Viable?</h3>
+
+    <p><b>Yes, with high confidence.</b> Pre-research confirms:</p>
+
+    <table>
+      <thead>
+        <tr><th>Concern</th><th>Finding</th><th>Risk Level</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Static linking breaks LD_PRELOAD</b></td>
+          <td>NCCL, RCCL, and oneCCL are <b>always</b> built as shared libraries (<code>libnccl.so</code>,
+              <code>librccl.so</code>, <code>libccl.so</code>) with dynamic libc linkage. Verified
+              from NCCL Makefile: <code>-shared -lpthread -lrt -ldl</code>. The intercepted functions
+              (<code>gethostname</code>, <code>stat</code>, <code>fopen</code>) are libc calls.</td>
+          <td style="color:#2e7d32;font-weight:bold">Not a risk</td>
+        </tr>
+        <tr>
+          <td><b>dlopen&rsquo;d plugins bypass LD_PRELOAD</b></td>
+          <td>NCCL dlopen&rsquo;s 5 plugin types + NVML + IB verbs. But LD_PRELOAD libraries are in
+              the global symbol scope; libc calls from dlopen&rsquo;d libraries are still intercepted.
+              The functions XTrans intercepts are called by NCCL&rsquo;s own code, not plugins.</td>
+          <td style="color:#2e7d32;font-weight:bold">Not a risk</td>
+        </tr>
+        <tr>
+          <td><b>Performance overhead</b></td>
+          <td>LD_PRELOAD adds ~1&ndash;5ns per call (one indirect jump). The intercepted functions
+              are called only during NCCL init (<code>getHostHash</code> via <code>std::call_once</code>,
+              <code>stat("/dev/shm")</code> once per communicator). <b>Zero data-path overhead.</b></td>
+          <td style="color:#2e7d32;font-weight:bold">Negligible</td>
+        </tr>
+        <tr>
+          <td><b>Reviewers view LD_PRELOAD as a &ldquo;hack&rdquo;</b></td>
+          <td>Published precedents: Trickle (USENIX ATC &rsquo;05), HetCCL (2026, intercepts NCCL/RCCL),
+              PhoenixOS/POS (SOSP &rsquo;24 / OSDI &rsquo;25, intercepts CUDA API), GPU C/R systems
+              (CRAC, DMTCP). LD_PRELOAD is accepted when the interception surface is narrow and
+              well-defined.</td>
+          <td style="color:#2e7d32;font-weight:bold">Manageable with proper framing</td>
+        </tr>
+        <tr>
+          <td><b>CCL updates break the shim</b></td>
+          <td>The shim intercepts POSIX syscalls (<code>gethostname</code>, <code>stat</code>,
+              <code>connect</code>) which are stable interfaces. The risk is NCCL adding <i>new</i>
+              gates, not changing existing syscalls. Phase 1 task A3 tests across NCCL versions.</td>
+          <td style="color:#e65100;font-weight:bold">Medium &mdash; mitigated by version testing</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p><b>Recommended hybrid approach:</b> LD_PRELOAD for <code>gethostname</code>/<code>stat</code>
+       interception + bind mounts for file-based interception (<code>/proc/sys/kernel/random/boot_id</code>,
+       sysfs topology files). This reduces the LD_PRELOAD surface to just two functions.</p>
+
+    <h3>2.4 Competitive Landscape: Is the Gap Real?</h3>
+
+    <p><b>Yes. No published work addresses cross-container intra-node GPU communication.</b></p>
+
+    <pre style="font-family:'Courier New',Courier,monospace;font-size:12px;background:#f8f8f8;border:1px solid #ddd;padding:12px 16px;margin:12px 0;overflow-x:auto;line-height:1.5;">
+                        Intra-Node              Inter-Node
+                    +-------------------+-------------------+
+  Single-Vendor     |  NCCL/RCCL/oneCCL |  NCCL NET plugin  |
+  (native)          |  (breaks in       |  (works fine)     |
+                    |   containers)     |                   |
+                    +-------------------+-------------------+
+  Single-Vendor     |  NVIDIA IMEX      |  NVIDIA IMEX      |
+  (cross-domain)    |  (GB200 only,     |  (NVLink fabric   |
+                    |   proprietary)    |   only)           |
+                    +-------------------+-------------------+
+  Cross-Vendor      |                   |  HetCCL (RDMA)    |
+  (cross-domain)    |  *** XTrans ***   |  UCCL (software   |
+                    |  (THIS GAP)       |   transport)      |
+                    +-------------------+-------------------+
+  Abstraction/      |                   |  MSCCL++          |
+  Policy            |  *** XTrans ***   |  NCCLbpf          |
+                    |  (THIS GAP)       |  (policy only)    |
+                    +-------------------+-------------------+</pre>
+
+    <h3>2.5 Why This Is Not &ldquo;Transplanting cuMem&rdquo;</h3>
+
+    <p>The concern is valid for a naive framing. Here is why XTrans is a genuine research
+       problem, not just engineering:</p>
+
+    <table>
+      <thead>
+        <tr><th>&ldquo;Just Transplanting cuMem&rdquo;</th><th>What XTrans Actually Requires</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Take NVIDIA&rsquo;s cuMem FD-passing trick and replicate it on AMD/Intel</td>
+          <td><b>AMD&rsquo;s RCCL explicitly disables cuMem-equivalent path</b> (<code>ncclIsCuMemSupported()=0</code>
+              on AMD). The HIP VMM API exists but is Beta and untested for cross-container P2P.
+              AMD&rsquo;s primary IPC uses opaque KFD-resolved handles, not FDs. Intel uses DMA-BUF FDs
+              but oneCCL&rsquo;s default exchange mode (<code>pidfd</code>) breaks across containers.
+              Each vendor requires a <i>different</i> recovery strategy.</td>
+        </tr>
+        <tr>
+          <td>Write a daemon that passes FDs between containers</td>
+          <td><b>Three fundamentally different handle types</b> require different broker strategies:
+              (1) POSIX FDs (NVIDIA cuMem, Intel L0) &rarr; <code>SCM_RIGHTS</code> relay,
+              (2) opaque blobs (AMD HSA, NVIDIA legacy) &rarr; shared memory or byte-copy relay,
+              (3) DMA-BUF FDs (AMD, Intel, potentially NVIDIA) &rarr; <code>SCM_RIGHTS</code> but
+              with different import semantics per vendor. Unifying these under one protocol while
+              preserving native performance is a design challenge.</td>
+        </tr>
+        <tr>
+          <td>Set some env vars and share some mounts</td>
+          <td><b>Each CCL has different &ldquo;gates&rdquo;</b> that must be satisfied. NCCL checks
+              <code>hostHash + shmDev + IPC socket</code>. RCCL checks the same three (forked from NCCL)
+              but has no cuMem escape hatch. oneCCL checks <code>pidfd</code> accessibility (requires
+              <code>PTRACE_MODE_ATTACH</code>). The interception surface differs per CCL and per version.</td>
+        </tr>
+        <tr>
+          <td>A single-vendor solution applied to multiple vendors</td>
+          <td><b>The research contribution is the discovery that the problem is universal and structural</b>
+              &mdash; all CCLs encode the same implicit assumption (shared OS namespace) but break through
+              vendor-specific mechanisms. Formalizing this as a taxonomy and showing that a common
+              architecture recovers native performance across vendors is a genuine systems insight.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>2.6 What Elevates XTrans to a Research Contribution</h3>
+
+    <p>Based on analysis of successful systems papers (Xen/SOSP&rsquo;03, Exokernel/SOSP&rsquo;95,
+       &ldquo;Simple Testing&rdquo;/OSDI&rsquo;14, Linux Scalability/OSDI&rsquo;10), the key is
+       that XTrans must teach the community something new about the problem space, not just
+       solve a specific instance. Four potential research contributions:</p>
+
+    <ol>
+      <li><b>Cross-vendor failure taxonomy (measurement contribution):</b> First systematic analysis
+          showing that NCCL, RCCL, and oneCCL all fail through the same three-step pattern
+          (topology &rarr; transport &rarr; IPC) under container isolation, despite having completely
+          different internal implementations. Precedent: &ldquo;Simple Testing Can Prevent Most
+          Critical Failures&rdquo; (OSDI&rsquo;14) discovered a universal pattern across 5 distributed
+          systems and was accepted at OSDI as a measurement paper.</li>
+
+      <li><b>DMA-BUF as universal GPU IPC substrate (systems insight):</b> Pre-research reveals that
+          DMA-BUF file descriptors are available on all three major GPU platforms (NVIDIA via
+          cuMem, AMD via <code>hsa_amd_portable_export_dmabuf</code>, Intel via Level Zero IPC).
+          DMA-BUF FDs can be passed via <code>SCM_RIGHTS</code> across any container boundary.
+          If we can demonstrate that DMA-BUF provides a <b>universal cross-container GPU memory
+          sharing primitive</b> with native performance, that is a genuine systems discovery &mdash;
+          not transplanting cuMem, but identifying a Linux kernel subsystem that unifies
+          vendor-divergent IPC mechanisms.</li>
+
+      <li><b>GPU isolation spectrum model (conceptual contribution):</b> Define &ldquo;GPU communication
+          isolation&rdquo; formally as a spectrum from L0 (no isolation, <code>--ipc=host</code>) through
+          L1 (namespace-only, broken communication) to L2 (brokered, controlled P2P) to L3
+          (hardware, MIG/SR-IOV). If we can build a model that <i>predicts</i> bandwidth recovery
+          for a given isolation configuration, that is a theoretical contribution.</li>
+
+      <li><b>Minimal interception surface (completeness argument):</b> Prove that intercepting
+          exactly N functions (e.g., <code>gethostname</code>, <code>stat</code>, <code>connect</code>)
+          is necessary and sufficient to recover native GPU communication performance. This is
+          analogous to the Exokernel&rsquo;s argument about &ldquo;secure bindings&rdquo; being the
+          minimal kernel interface.</li>
+    </ol>
+
+    <div style="background:#e3f2fd;border:2px solid #1565c0;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>Recommended framing for the paper:</b> &ldquo;We present the first systematic
+         cross-vendor measurement of how container isolation breaks GPU collective communication.
+         We discover that all major CCLs fail through the same three mechanisms [taxonomy].
+         We identify DMA-BUF file descriptors as a universal cross-container GPU memory sharing
+         primitive, and show that a lightweight broker architecture recovers &ge;95% of native
+         interconnect bandwidth across NVIDIA, AMD, and Intel GPUs.&rdquo;</p>
+    </div>
+
+    <h3>2.7 Feasibility Risk Matrix</h3>
+
+    <table>
+      <thead>
+        <tr><th>Risk</th><th>Probability</th><th>Impact</th><th>Evidence from Pre-Research</th><th>Mitigation</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>AMD HIP VMM FD path doesn&rsquo;t work in practice</b></td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+          <td>API exists (<code>hipMemHandleTypePosixFileDescriptor</code>) but is Beta.
+              RCCL explicitly disables it. No public evidence of anyone using it for IPC.</td>
+          <td>Fallback to DMA-BUF path (<code>hsa_amd_portable_export_dmabuf</code>) which is
+              kernel-mature and already used by RCCL for RDMA registration. Or test whether
+              opaque HSA IPC handles work across containers via shared <code>/dev/kfd</code>.</td>
+        </tr>
+        <tr>
+          <td><b>DMA-BUF import doesn&rsquo;t give GPU-accessible VA</b></td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+          <td style="color:#c44e52;font-weight:bold">High</td>
+          <td>AMD uses DMA-BUF export for RDMA NIC registration (<code>ibv_reg_dmabuf_mr</code>),
+              not for GPU-to-GPU P2P mapping. The import side may not produce a GPU VA.</td>
+          <td>Test empirically on AMD hardware. If DMA-BUF import doesn&rsquo;t work for GPU P2P,
+              this is itself a finding &mdash; it shows vendor-specific limitations of the
+              &ldquo;universal&rdquo; DMA-BUF substrate, strengthening the paper&rsquo;s argument
+              for a broker abstraction.</td>
+        </tr>
+        <tr>
+          <td><b>AMD hardware access</b></td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+          <td style="color:#c44e52;font-weight:bold">High</td>
+          <td>No MI250X/MI300X in our lab. Cloud options: Azure ND-MI300X-v5, AMD Accelerator Cloud.</td>
+          <td>Apply for cloud credits immediately. Begin RCCL source analysis in parallel (open source).
+              Worst case: Paper B with NCCL + Intel (if Intel GPU access is easier) + RCCL source
+              analysis (no AMD experiments) is still publishable.</td>
+        </tr>
+        <tr>
+          <td><b>Paper is seen as &ldquo;just engineering&rdquo;</b></td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+          <td style="color:#c44e52;font-weight:bold">High</td>
+          <td>Abstraction-layer papers that succeed at top venues articulate a <i>design principle</i>
+              (Xen: paravirtualization, Exokernel: end-to-end for OS). Those that &ldquo;merely&rdquo;
+              unify interfaces land at workshops (virtio/OLS, UCX/HOTI).</td>
+          <td>Frame around the <b>taxonomy + DMA-BUF insight + isolation spectrum model</b>, not
+              the daemon implementation. The daemon is the artifact; the contribution is the
+              understanding of why GPU communication breaks universally under containerization
+              and the discovery that DMA-BUF provides a cross-vendor escape hatch.</td>
+        </tr>
+        <tr>
+          <td><b>NVIDIA closes the gap with IMEX expansion</b></td>
+          <td style="color:#2e7d32;font-weight:bold">Low</td>
+          <td style="color:#c44e52;font-weight:bold">High</td>
+          <td>IMEX requires GB200 NVL72 hardware. No evidence of expansion to H100/A100.
+              NVIDIA&rsquo;s container strategy focuses on stronger isolation (Confidential Containers),
+              not easier sharing. NCCL has no intra-node transport plugin interface.</td>
+          <td>Even if NVIDIA expands IMEX, it remains single-vendor and proprietary. XTrans&rsquo;s
+              vendor-agnostic positioning remains differentiated.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>2.8 Fallback Directions If XTrans Abstraction Proves Infeasible</h3>
+
+    <p>If the cross-vendor abstraction turns out to be too shallow (e.g., DMA-BUF works
+       identically on all platforms, making the broker trivial), or too hard (e.g., vendor
+       IPC mechanisms are fundamentally incompatible), we have three fallback directions:</p>
+
+    <table>
+      <thead>
+        <tr><th>Fallback</th><th>Scope</th><th>When to Pivot</th><th>Paper Venue</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Fallback A: Pure Measurement Paper</b><br>
+              &ldquo;How Container Isolation Breaks GPU Communication: A Cross-Vendor Study&rdquo;</td>
+          <td>Phases 1&ndash;2 only. Systematic measurement of NCCL + RCCL (+ oneCCL if possible)
+              under container isolation. Taxonomy of failure modes. No system contribution &mdash;
+              just the first comprehensive analysis.</td>
+          <td>If the broker/shim approach adds &gt;5% overhead or requires per-CCL-version
+              maintenance that undermines the &ldquo;general mechanism&rdquo; claim.</td>
+          <td>IMC, ATC (measurement track), ISCA (characterization)</td>
+        </tr>
+        <tr>
+          <td><b>Fallback B: NCCL-Deep Paper</b><br>
+              &ldquo;Inside NCCL&rsquo;s Container Isolation Gates: Analysis, Interception, and Recovery&rdquo;</td>
+          <td>Phase 1 only (deep). Go extremely deep on NCCL: full syscall trace analysis,
+              LD_PRELOAD shim, version compatibility matrix across NCCL 2.18&ndash;2.29, security
+              model, performance characterization. Single-vendor but very thorough.</td>
+          <td>If AMD/Intel hardware access is impossible and cross-vendor story collapses.</td>
+          <td>ATC, EuroSys, NSDI (systems track)</td>
+        </tr>
+        <tr>
+          <td><b>Fallback C: DMA-BUF as Universal GPU IPC</b><br>
+              &ldquo;DMA-BUF Beyond Graphics: A Universal Cross-Container GPU Memory Sharing Primitive&rdquo;</td>
+          <td>Focused investigation of DMA-BUF as a cross-vendor, cross-container GPU memory
+              sharing mechanism. Test DMA-BUF export/import for GPU P2P on NVIDIA (cuMem),
+              AMD (<code>hsa_amd_portable_export_dmabuf</code>), Intel (Level Zero). Characterize
+              performance, limitations, and kernel requirements.</td>
+          <td>If the DMA-BUF insight turns out to be the strongest finding &mdash; a single
+              Linux kernel primitive that solves the problem across vendors.</td>
+          <td>ATC, ASPLOS, EuroSys</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>2.9 Revised Research Strategy</h3>
+
+    <p>Based on pre-research findings, the recommended strategy is:</p>
+
+    <ol>
+      <li><b>Phase 1 (unchanged):</b> NCCL gate taxonomy + LD_PRELOAD shim on node192. This is
+          low-risk and produces immediate results.</li>
+
+      <li><b>Phase 1.5 (new):</b> DMA-BUF feasibility spike. Before building the full AMD/Intel
+          story, test whether DMA-BUF export &rarr; FD passing &rarr; DMA-BUF import &rarr; GPU P2P
+          works on NVIDIA (we have hardware). If it works on NVIDIA via DMA-BUF (not cuMem-specific),
+          that&rsquo;s strong evidence it will work on AMD/Intel too, since DMA-BUF is a kernel
+          subsystem, not a vendor API. This de-risks Phase 2 significantly.</li>
+
+      <li><b>Phase 2 (refined):</b> AMD RCCL analysis. Three sub-experiments in priority order:
+          <ol type="a">
+            <li>Test whether opaque HSA IPC handles work across containers via shared <code>/dev/kfd</code>
+                (cheapest experiment &mdash; may already work)</li>
+            <li>Test DMA-BUF export/import for GPU P2P on AMD</li>
+            <li>Test HIP VMM FD path (<code>hipMemHandleTypePosixFileDescriptor</code>)</li>
+          </ol>
+      </li>
+
+      <li><b>Decision point after Phase 2:</b> Based on results, choose between:
+          <ul>
+            <li>Full XTrans system paper (if cross-vendor abstraction is viable and non-trivial)</li>
+            <li>Measurement + mechanism paper (if the taxonomy is the strongest contribution)</li>
+            <li>DMA-BUF focused paper (if DMA-BUF is the key insight)</li>
+          </ul>
+      </li>
+    </ol>
+
+    <div style="background:#e8f5e9;border:2px solid #2e7d32;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>Bottom line:</b> XTrans is feasible and the gap is real. The key risk is not
+         technical feasibility but <b>research framing</b>. The pre-research shows that the problem
+         is genuinely harder than &ldquo;transplanting cuMem&rdquo; because vendor IPC mechanisms
+         diverge in fundamental ways. The DMA-BUF insight (a Linux kernel primitive that may
+         unify all three vendors) is potentially the strongest contribution and should be
+         validated early (Phase 1.5). With the right framing &mdash; taxonomy + DMA-BUF discovery
+         + isolation model &mdash; this is a solid ATC/EuroSys paper with a path to OSDI/SOSP
+         if the full system is built.</p>
+    </div>
+
+<!-- ============================================================ -->
+    <!-- SECTION 3: THE PROBLEM                                      -->
+    <!-- ============================================================ -->
+
+    <h2>3. The Problem: Container Isolation Breaks GPU Communication Universally</h2>
+
+    <h3>3.1 The Universal Pattern</h3>
+
+    <p>Every GPU CCL follows the same intra-node communication pattern:</p>
+
+    <pre style="font-family:'Courier New',Courier,monospace;font-size:12px;background:#f8f8f8;border:1px solid #ddd;padding:12px 16px;margin:12px 0;overflow-x:auto;line-height:1.5;">
+Step 1: TOPOLOGY DISCOVERY
+  &bull; Detect which GPUs are on the same physical node
+  &bull; Detect interconnect type and bandwidth between GPU pairs
+  &bull; Build a topology graph (NVLink mesh, PCIe tree, xGMI mesh, etc.)
+
+Step 2: TRANSPORT SELECTION
+  &bull; For each GPU pair, select the fastest available transport
+  &bull; Intra-node: P2P (NVLink/xGMI/Xe Link) &gt; SHM (host staging) &gt; NET (socket/RDMA)
+  &bull; Inter-node: RDMA &gt; TCP
+
+Step 3: IPC HANDLE EXCHANGE
+  &bull; Allocate GPU memory for communication buffers
+  &bull; Export memory handles (vendor-specific: cudaIpcMemHandle, cuMem FD, HSA signal, ...)
+  &bull; Exchange handles between GPU processes via IPC mechanism
+  &bull; Map peer memory into local address space
+
+Step 4: DATA TRANSFER
+  &bull; Use the selected transport for collective operations
+  &bull; P2P: direct load/store over NVLink/xGMI
+  &bull; SHM: GPU &rarr; host buffer &rarr; GPU via shared memory
+  &bull; NET: GPU &rarr; NIC &rarr; network &rarr; NIC &rarr; GPU</pre>
+
+    <p><b>Container isolation breaks Steps 1&ndash;3</b> in vendor-specific but structurally
+       identical ways:</p>
+
+    <table>
+      <thead>
+        <tr><th>Step</th><th>What Breaks</th><th>NCCL (NVIDIA)</th><th>RCCL (AMD)</th><th>oneCCL (Intel)</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>1. Topology</b></td>
+          <td>CCL cannot see peer GPUs &rarr; cannot detect interconnect</td>
+          <td><code>hostHash</code> mismatch (different hostname + boot_id)</td>
+          <td>Similar hostname-based node detection; <code>/sys/class/kfd</code> visibility</td>
+          <td>Level Zero device enumeration limited to visible devices</td>
+        </tr>
+        <tr>
+          <td><b>2. Transport</b></td>
+          <td>CCL falls back to slowest transport (TCP/socket)</td>
+          <td>P2P/SHM gates fail &rarr; NET/Socket fallback (2&ndash;10&times; slower)</td>
+          <td>xGMI P2P requires shared <code>/dev/kfd</code>; falls back to socket</td>
+          <td>Xe Link requires shared device files; falls back to OFI/TCP</td>
+        </tr>
+        <tr>
+          <td><b>3. IPC</b></td>
+          <td>Memory handle exchange mechanism is namespace-scoped</td>
+          <td><code>cudaIpcMemHandle</code> requires shared IPC namespace; cuMem FD requires shared network namespace (UDS)</td>
+          <td><code>hsa_amd_ipc_memory_create/attach</code> requires shared IPC namespace</td>
+          <td>Level Zero IPC handles require shared IPC namespace</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>3.2 Why Existing Solutions Are Insufficient</h3>
+
+    <table>
+      <thead>
+        <tr><th>Approach</th><th>What It Does</th><th>Why It&rsquo;s Not Enough</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Our exp2 workaround</b><br>(NCCL env vars + cuMem)</td>
+          <td>Satisfies NCCL&rsquo;s three gates via <code>NCCL_HOSTID</code>, shared <code>/dev/shm</code>, host networking, <code>NCCL_CUMEM_ENABLE=1</code></td>
+          <td>NVIDIA-only; undocumented; fragile across NCCL versions; requires <code>NVIDIA_VISIBLE_DEVICES=all</code> (leaks topology)</td>
+        </tr>
+        <tr>
+          <td><b>NVIDIA IMEX daemon</b></td>
+          <td>Kernel-level GPU memory exchange for NVLink fabrics; K8s ComputeDomains</td>
+          <td>GB200/Blackwell only; NVIDIA-proprietary; requires specific kernel module; not available on A100/H100</td>
+        </tr>
+        <tr>
+          <td><b><code>--ipc=host --network=host</code></b></td>
+          <td>Shares all namespaces with host</td>
+          <td>Destroys isolation entirely; no security boundary; defeats the purpose of containers</td>
+        </tr>
+        <tr>
+          <td><b>RDMA fallback</b><br>(GPUDirect RDMA / RoCE)</td>
+          <td>Uses network stack for all communication, bypassing IPC</td>
+          <td>Wastes NVLink/xGMI bandwidth; requires RDMA hardware; adds NIC hop latency for intra-node traffic</td>
+        </tr>
+        <tr>
+          <td><b>HetCCL / UCCL</b></td>
+          <td>Cross-vendor CCL via RDMA abstraction</td>
+          <td>Inter-node focused; uses RDMA for everything; does not address intra-node P2P across containers</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div style="background:#fff3e0;border:2px solid #e65100;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>The gap:</b> No existing system provides a <b>general, vendor-agnostic mechanism</b>
+         for recovering native GPU interconnect bandwidth across container isolation boundaries.
+         Every solution is either vendor-locked (NCCL env vars, IMEX), destroys isolation
+         (<code>--ipc=host</code>), or accepts bandwidth loss (RDMA fallback).</p>
+    </div>
+
+<!-- ============================================================ -->
+    <!-- SECTION 4: PROPOSED ARCHITECTURE                             -->
+    <!-- ============================================================ -->
+
+    <h2>4. Proposed Architecture: XTrans</h2>
+
+    <h3>4.1 Design Overview</h3>
+
+    <p>XTrans is a host-side daemon + per-container shim library that solves the three
+       broken steps (topology, transport selection, IPC handle exchange) without modifying
+       any CCL source code.</p>
+
+    <pre style="font-family:'Courier New',Courier,monospace;font-size:12px;background:#f8f8f8;border:1px solid #ddd;padding:12px 16px;margin:12px 0;overflow-x:auto;line-height:1.5;">
+    Host Machine (bare metal or VM)
+    ================================================================
+    |                                                              |
+    |   +------------------+                                       |
+    |   |  XTrans Daemon   |  (runs on host, privileged)           |
+    |   |                  |                                       |
+    |   |  +------------+  |                                       |
+    |   |  | Topology   |  |  Sees ALL GPUs, ALL interconnects     |
+    |   |  | Discovery  |  |  Builds full topology graph           |
+    |   |  +------------+  |                                       |
+    |   |  +------------+  |                                       |
+    |   |  | Handle     |  |  Brokers GPU memory handle exchange   |
+    |   |  | Broker     |  |  between containers via UDS           |
+    |   |  +------------+  |                                       |
+    |   |  +------------+  |                                       |
+    |   |  | Fabric     |  |  Vendor-specific backends:            |
+    |   |  | Backends   |  |  NVIDIA cuMem, AMD HSA IPC,           |
+    |   |  |            |  |  Intel L0 IPC, generic SHM            |
+    |   |  +------------+  |                                       |
+    |   +--------+---------+                                       |
+    |            |  UDS (filesystem-based, bind-mounted)            |
+    |   +--------+----+--------+--------+                          |
+    |   |             |        |        |                          |
+    |   v             v        v        v                          |
+    | +----------+ +----------+ +----------+ +----------+          |
+    | |Container | |Container | |Container | |Container |          |
+    | |  GPU 0   | |  GPU 1   | |  GPU 2   | |  GPU 3   |          |
+    | |          | |          | |          | |          |          |
+    | | +------+ | | +------+ | | +------+ | | +------+ |          |
+    | | |XTrans| | | |XTrans| | | |XTrans| | | |XTrans| |          |
+    | | | Shim | | | | Shim | | | | Shim | | | | Shim | |          |
+    | | +--+---+ | | +--+---+ | | +--+---+ | | +--+---+ |          |
+    | |    |     | |    |     | |    |     | |    |     |          |
+    | | +--+---+ | | +--+---+ | | +--+---+ | | +--+---+ |          |
+    | | | NCCL | | | | RCCL | | | |oneCCL| | | | HCCL | |          |
+    | | +------+ | | +------+ | | +------+ | | +------+ |          |
+    | +----------+ +----------+ +----------+ +----------+          |
+    |       |            |            |            |                |
+    ================================================================
+            |            |            |            |
+         [GPU 0]======[GPU 1]======[GPU 2]======[GPU 3]
+              NVLink / Infinity Fabric / Xe Link / HCCS</pre>
+
+    <h3>4.2 Three-Layer Architecture</h3>
+
+    <table>
+      <thead>
+        <tr><th>Layer</th><th>Where It Runs</th><th>Responsibility</th><th>Interface</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>L1: Topology Service</b></td>
+          <td>Host daemon</td>
+          <td>Discover all GPUs and interconnects on the node; build a topology graph;
+              serve topology queries to containers; expose a <b>virtual topology</b> that
+              makes containers appear co-located to their CCL</td>
+          <td>gRPC or UDS protocol: <code>GetTopology(container_id) &rarr; TopologyGraph</code></td>
+        </tr>
+        <tr>
+          <td><b>L2: Handle Broker</b></td>
+          <td>Host daemon</td>
+          <td>Mediate GPU memory handle exchange between containers; receive exported
+              handles from one container, relay to the peer container; support multiple
+              handle types (cuMem FD, HSA IPC, L0 IPC, POSIX SHM)</td>
+          <td>UDS with <code>SCM_RIGHTS</code> for FD passing; SHM for opaque handles</td>
+        </tr>
+        <tr>
+          <td><b>L3: CCL Shim</b></td>
+          <td>Inside each container</td>
+          <td>Intercept CCL&rsquo;s topology detection and IPC calls; redirect them through
+              the XTrans daemon; make the CCL &ldquo;believe&rdquo; it is in a shared namespace</td>
+          <td><code>LD_PRELOAD</code> library intercepting <code>gethostname()</code>,
+              <code>stat()</code>, <code>connect()</code>, and vendor-specific IPC calls</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>4.3 How It Solves Each Broken Step</h3>
+
+    <table>
+      <thead>
+        <tr><th>Broken Step</th><th>XTrans Solution</th><th>Mechanism</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>1. Topology Discovery</b></td>
+          <td>L1 provides a <b>virtual topology file</b> (NCCL XML, or equivalent) that
+              includes all GPUs and their interconnects, even those invisible to the container</td>
+          <td>NVIDIA: <code>NCCL_TOPO_FILE</code> pointing to daemon-generated XML<br>
+              AMD: Synthetic <code>/sys/class/kfd</code> entries via FUSE or bind-mount<br>
+              Intel: Level Zero device enumeration override</td>
+        </tr>
+        <tr>
+          <td><b>2. Transport Selection</b></td>
+          <td>L3 shim makes the CCL&rsquo;s &ldquo;same-node&rdquo; checks pass, so it selects
+              P2P/SHM instead of falling back to NET</td>
+          <td>NVIDIA: Intercept <code>gethostname()</code> &rarr; return common hostname;
+              intercept <code>stat("/dev/shm")</code> &rarr; return shared <code>st_dev</code><br>
+              AMD: Similar hostname + shared <code>/dev/shm</code> interception<br>
+              Intel: Override <code>ze_driver_handle_t</code> enumeration</td>
+        </tr>
+        <tr>
+          <td><b>3. IPC Handle Exchange</b></td>
+          <td>L2 broker relays GPU memory handles between containers via a shared
+              filesystem UDS socket</td>
+          <td>NVIDIA cuMem: FD passing via <code>SCM_RIGHTS</code> through broker UDS<br>
+              NVIDIA legacy: <code>cudaIpcMemHandle</code> relay via SHM segment<br>
+              AMD HSA: <code>hsa_amd_ipc_memory_create</code> handle relay via SHM<br>
+              Intel L0: <code>zeMemGetIpcHandle</code> relay via SHM<br>
+              Generic: Host-staged SHM buffer as universal fallback</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>4.4 Key Design Principles</h3>
+
+    <ol>
+      <li><b>Zero CCL modification:</b> XTrans works via <code>LD_PRELOAD</code>, environment
+          variables, and filesystem mounts. No CCL source code changes required. This is
+          critical for adoption &mdash; users should not need to maintain a fork of NCCL/RCCL.</li>
+
+      <li><b>Minimal privilege escalation:</b> Only the host daemon needs elevated privileges
+          (to see all GPUs and pass FDs). Containers remain unprivileged with single-GPU
+          visibility. The security boundary is the daemon&rsquo;s access control policy.</li>
+
+      <li><b>Fabric-agnostic core, vendor-specific backends:</b> The topology service and
+          handle broker define vendor-neutral protocols. Vendor-specific logic is isolated
+          in backend plugins (one per vendor). Adding a new vendor means writing one backend,
+          not redesigning the system.</li>
+
+      <li><b>Graceful degradation:</b> If the daemon is unavailable or a backend is missing,
+          the CCL falls back to its default behavior (TCP/socket). XTrans is an optimization
+          layer, not a hard dependency.</li>
+
+      <li><b>Container-runtime agnostic:</b> Works with Docker, containerd, CRI-O, Kata
+          Containers (with VFIO passthrough). The only requirement is the ability to
+          bind-mount a UDS socket directory into the container.</li>
+    </ol>
+
+<!-- ============================================================ -->
+    <!-- SECTION 5: RELATED WORK                                     -->
+    <!-- ============================================================ -->
+
+    <h2>5. Related Work</h2>
+
+    <h3>5.1 GPU Collective Communication Libraries</h3>
+
+    <p>The CCL landscape is fragmented along vendor lines. Each library makes identical
+       assumptions about shared OS namespaces, and each breaks identically under container
+       isolation.</p>
+
+    <table>
+      <thead>
+        <tr><th>Library</th><th>Vendor</th><th>Intra-Node Transport</th><th>IPC Mechanism</th><th>Container Isolation Impact</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>NCCL 2.21+</b></td>
+          <td>NVIDIA</td>
+          <td>P2P (NVLink/PCIe via cuMem VMM or legacy cudaIPC), SHM (host-staged)</td>
+          <td>cuMem: POSIX FD via UDS <code>SCM_RIGHTS</code><br>Legacy: <code>cudaIpcMemHandle</code> via IPC namespace</td>
+          <td>Three gates (hostHash, shmDev, IPC socket) all fail &rarr; NET/Socket fallback. cuMem path recoverable with env vars (our exp2).</td>
+        </tr>
+        <tr>
+          <td><b>RCCL</b></td>
+          <td>AMD</td>
+          <td>P2P (xGMI/Infinity Fabric), SHM</td>
+          <td><code>hsa_amd_ipc_memory_create/attach</code> via IPC namespace; <code>/dev/kfd</code> shared access</td>
+          <td>Separate <code>/dev/kfd</code> and IPC namespace &rarr; P2P fails. No cuMem-equivalent bypass documented.</td>
+        </tr>
+        <tr>
+          <td><b>oneCCL</b></td>
+          <td>Intel</td>
+          <td>P2P (Xe Link), SHM, OFI (libfabric)</td>
+          <td>Level Zero IPC handles (<code>zeMemGetIpcHandle</code>) &mdash; internally DMA-BUF FDs.
+              Three exchange modes (<code>CCL_ZE_IPC_EXCHANGE</code>):<br>
+              &bull; <code>pidfd</code> (default): <code>pidfd_getfd()</code> &mdash; requires <code>PTRACE_MODE_ATTACH</code><br>
+              &bull; <code>drmfd</code>: DRM PRIME via shared <code>/dev/dri</code><br>
+              &bull; <code>sockets</code>: UDS <code>SCM_RIGHTS</code> at <code>/tmp/ccl-handle-*</code></td>
+          <td>Default <code>pidfd</code> mode breaks across containers (no ptrace access).
+              <code>drmfd</code> breaks (separate <code>/dev/dri</code>).
+              <b><code>sockets</code> mode works across PID namespaces</b> &mdash; only needs
+              shared <code>/tmp</code> path. Pre-research confirmed from oneCCL source
+              (<code>ze_fd_manager.cpp</code>).</td>
+        </tr>
+        <tr>
+          <td><b>HCCL</b></td>
+          <td>Huawei</td>
+          <td>P2P (HCCS/UnifiedBus), SHM</td>
+          <td>Ascend NPU IPC (undocumented publicly)</td>
+          <td>Likely same pattern &mdash; container isolation breaks intra-node P2P. No public analysis exists.</td>
+        </tr>
+        <tr>
+          <td><b>Gloo</b></td>
+          <td>Meta</td>
+          <td>SHM, TCP</td>
+          <td>POSIX shared memory</td>
+          <td>36% latency increase cross-container (TCP fallback). Less affected than NCCL because Gloo&rsquo;s GPU path already stages through host.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>5.2 Cross-Vendor Communication</h3>
+
+    <table>
+      <thead>
+        <tr><th>System</th><th>Venue/Year</th><th>Approach</th><th>Relation to XTrans</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>HetCCL</b></td>
+          <td>arXiv 2025</td>
+          <td>Unifies NCCL + RCCL via RDMA abstraction (<code>ibv_reg_mr</code> on GPU memory);
+              LD_PRELOAD intercepts NCCL/RCCL symbols; TACC runtime API abstracts CUDA/HIP</td>
+          <td>Shares our LD_PRELOAD interception approach. But HetCCL targets cross-vendor
+              inter-node (RDMA), not cross-container intra-node (P2P). Complementary.</td>
+        </tr>
+        <tr>
+          <td><b>UCCL</b></td>
+          <td>arXiv 2025</td>
+          <td>Software transport layer decoupling control/data paths; drop-in NCCL replacement
+              via <code>libnccl-net.so</code> plugin; supports ConnectX, Thor-2, EFA, ENA</td>
+          <td>Demonstrates that NCCL&rsquo;s NET plugin can be a powerful extension point for
+              inter-node. But NET plugin cannot control intra-node P2P/SHM &mdash; our problem.</td>
+        </tr>
+        <tr>
+          <td><b>HiCCL</b></td>
+          <td>arXiv 2024</td>
+          <td>Hierarchical CCL with compositional primitives; per-hierarchy-level backend
+              selection; tested on NVIDIA, AMD, Intel</td>
+          <td>Closest to a &ldquo;unified CCL abstraction&rdquo; but does not address container
+              isolation. Could be a consumer of XTrans &mdash; XTrans provides the transport,
+              HiCCL provides the algorithm.</td>
+        </tr>
+        <tr>
+          <td><b>MSCCL++</b></td>
+          <td>Microsoft, 2024</td>
+          <td>Three-layer GPU communication abstraction (Primitive/DSL/Collective);
+              PortChannel, MemoryChannel, SwitchChannel; adopted by AMD RCCL</td>
+          <td>Powerful abstraction but assumes shared-process GPU access for MemoryChannel.
+              PortChannel (NIC-based) works cross-container but loses intra-node bandwidth.
+              XTrans could enable MemoryChannel across containers.</td>
+        </tr>
+        <tr>
+          <td><b>Zettabyte AI<br>(Joint Training)</b></td>
+          <td>arXiv 2025</td>
+          <td>Mixed NVIDIA H200 + AMD MI325X training via GPUDirect RDMA; multi-adaptor
+              architecture; 98.2% of homogeneous throughput</td>
+          <td>Cross-vendor via RDMA (inter-node). Does not address intra-node P2P or containers.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>5.3 NCCL Extensibility and Internals</h3>
+
+    <table>
+      <thead>
+        <tr><th>Work</th><th>Year</th><th>Key Finding</th><th>Implication for XTrans</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>NCCLbpf</b></td>
+          <td>2026</td>
+          <td>Embeds eBPF runtime in NCCL plugin system for verified policy execution;
+              hot-reloadable policies (1.07 &mu;s swap); 27% throughput improvement for
+              NVLink-aware algorithm selection</td>
+          <td>Demonstrates that NCCL&rsquo;s plugin system can be extended creatively. But
+              NCCLbpf operates at algorithm/tuner level, not transport level. XTrans
+              operates below where NCCLbpf hooks in.</td>
+        </tr>
+        <tr>
+          <td><b>NCCLX / CTran</b><br>(Meta)</td>
+          <td>2025</td>
+          <td>Custom transport layer alongside NCCL for 100K+ GPU scale; host-driven,
+              zero-copy, SM-free communication; dynamic queue pair load balancing</td>
+          <td>Shows that custom transports can coexist with NCCL. But CTran is inter-node
+              (RDMA). The architectural pattern (dispatch to custom vs baseline) is relevant.</td>
+        </tr>
+        <tr>
+          <td><b>NCCL 2.27<br>Symmetric Memory</b></td>
+          <td>2025</td>
+          <td>Identical virtual addresses across GPUs via CUDA VMM; <code>ncclCommShrink</code>
+              for dynamic GPU exclusion; 9&times; latency reduction for small messages</td>
+          <td>Symmetric memory requires coordinated VA allocation &mdash; harder across containers.
+              <code>ncclCommShrink</code> is relevant for elastic operations (Direction B).
+              cuMem VMM is the same API our exp2 uses.</td>
+        </tr>
+        <tr>
+          <td><b>NCCL 2.28<br>Device API + GIN</b></td>
+          <td>2025</td>
+          <td>GPU-initiated networking; CUDA kernels directly initiate RDMA; three I/O modes
+              (LSA for NVLink, Multimem for NVLS, GIN for network)</td>
+          <td>GIN is inter-node. LSA mode (NVLink load/store) is what we want to preserve
+              across containers. Device API does not change the transport selection logic.</td>
+        </tr>
+        <tr>
+          <td><b>Demystifying NCCL</b><br>(ETH Zurich + NVIDIA)</td>
+          <td>2025</td>
+          <td>Comprehensive NCCL 2.19.1 internals analysis; documents transport priority
+              (NVLink P2P &gt; PCIe P2P &gt; SHM &gt; NET); notes &ldquo;performance degradation
+              under virtualization or containerization&rdquo;</td>
+          <td>Confirms our findings. Notes the problem but does not propose a solution.
+              Our exp2 analysis goes deeper on the container-specific gates.</td>
+        </tr>
+        <tr>
+          <td><b>NCCL Net Plugin API</b></td>
+          <td>&mdash;</td>
+          <td>Plugin interface (<code>libnccl-net.so</code>) only controls NET transport (index 2).
+              P2P (index 0) and SHM (index 1) are hardcoded in <code>transport.cc</code>.
+              No mechanism to register custom intra-node transports.</td>
+          <td><b>Critical constraint:</b> We cannot build XTrans as an NCCL plugin. Must use
+              LD_PRELOAD interception or environment variable manipulation instead.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>5.4 Hardware Interconnect Landscape</h3>
+
+    <p>The diversity of GPU interconnects is growing rapidly, making a fabric-agnostic
+       approach increasingly valuable:</p>
+
+    <table>
+      <thead>
+        <tr><th>Fabric</th><th>Vendor</th><th>Bandwidth (bidir)</th><th>Topology</th><th>Container P2P Status</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>NVLink 5.0</b></td>
+          <td>NVIDIA</td>
+          <td>1,800 GB/s (18 links &times; 100 GB/s)</td>
+          <td>NVSwitch all-to-all (72 GPUs)</td>
+          <td>Recoverable via cuMem VMM (our exp2). IMEX for GB200+.</td>
+        </tr>
+        <tr>
+          <td><b>NVLink 3.0</b></td>
+          <td>NVIDIA (A100)</td>
+          <td>600 GB/s (12 links &times; 50 GB/s)</td>
+          <td>NVSwitch all-to-all (8 GPUs)</td>
+          <td>Recoverable via cuMem VMM (our exp2, validated).</td>
+        </tr>
+        <tr>
+          <td><b>Infinity Fabric / xGMI</b></td>
+          <td>AMD</td>
+          <td>896 GB/s aggregate (MI300X, 8 GPUs)</td>
+          <td>Mesh (bandwidth tiers by hop count)</td>
+          <td><b>Unknown.</b> No published cross-container P2P recovery. Key research target.</td>
+        </tr>
+        <tr>
+          <td><b>Xe Link</b></td>
+          <td>Intel</td>
+          <td>~100 GB/s per link (Ponte Vecchio)</td>
+          <td>8-GPU OAM subsystem</td>
+          <td><b>Unknown.</b> Level Zero IPC likely breaks. Key research target.</td>
+        </tr>
+        <tr>
+          <td><b>HCCS / UnifiedBus 2.0</b></td>
+          <td>Huawei</td>
+          <td>16 PB/s aggregate (Atlas 950 SuperPod, 8192 NPUs)</td>
+          <td>All-optical, 10K+ NPU fabric</td>
+          <td><b>Unknown.</b> HCCL internals not public. Potential collaboration target.</td>
+        </tr>
+        <tr>
+          <td><b>UALink 1.0</b></td>
+          <td>Open standard</td>
+          <td>800 GB/s (x4 config, 200 GT/s)</td>
+          <td>Up to 1,024 accelerators</td>
+          <td><b>Not yet available.</b> Hardware expected late 2026&ndash;2027. XTrans should be
+              designed to accommodate UALink from day one.</td>
+        </tr>
+        <tr>
+          <td><b>CXL 4.0</b></td>
+          <td>Open standard</td>
+          <td>128 GT/s (memory-semantic)</td>
+          <td>Multi-rack pooled memory</td>
+          <td>CPU-to-device coherent access. Complementary to GPU P2P (different use case).</td>
+        </tr>
+        <tr>
+          <td><b>TPU ICI</b></td>
+          <td>Google</td>
+          <td>9,600 Gbps (Ironwood v7)</td>
+          <td>3D torus with OCS</td>
+          <td>Closed ecosystem. Not a target for XTrans (Google controls the full stack).</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>5.5 Cloud-Native GPU Infrastructure</h3>
+
+    <table>
+      <thead>
+        <tr><th>System</th><th>What It Does</th><th>Relation to XTrans</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>K8s DRA</b><br>(GA in K8s 1.34)</td>
+          <td>Dynamic Resource Allocation for GPUs; topology-aware scheduling via
+              <code>matchAttribute: pcieRoot</code>; NVIDIA DRA driver donated to CNCF</td>
+          <td>DRA decides <i>which</i> GPUs a container gets. XTrans decides <i>how</i>
+              those GPUs communicate. Complementary &mdash; DRA could pass topology hints
+              to XTrans.</td>
+        </tr>
+        <tr>
+          <td><b>NVIDIA GPU Operator</b></td>
+          <td>Automates GPU driver lifecycle, CDI, GPUDirect RDMA setup in K8s</td>
+          <td>XTrans daemon could be deployed as a DaemonSet alongside GPU Operator.
+              GPU Operator handles driver; XTrans handles cross-container communication.</td>
+        </tr>
+        <tr>
+          <td><b>NVIDIA ComputeDomains</b><br>(IMEX + K8s)</td>
+          <td>Dynamic IMEX domain creation per workload; per-workload NVLink isolation</td>
+          <td>NVIDIA&rsquo;s proprietary answer to the same problem. GB200+ only.
+              XTrans is the vendor-agnostic alternative for existing hardware.</td>
+        </tr>
+        <tr>
+          <td><b>Kata Containers + GPU</b></td>
+          <td>GPU passthrough to microVMs via VFIO; hardware isolation boundary</td>
+          <td>Strongest isolation model. P2P across Kata VMs requires network stack.
+              XTrans could potentially broker VFIO-level handle exchange, but this is
+              a stretch goal.</td>
+        </tr>
+        <tr>
+          <td><b>HAMi / BUD-FCSP</b></td>
+          <td>Software GPU virtualization (CNCF sandbox); SM limiting, memory isolation</td>
+          <td>Orthogonal &mdash; GPU sharing within a container, not cross-container communication.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>5.6 Abstraction Layers Above CCLs</h3>
+
+    <table>
+      <thead>
+        <tr><th>Layer</th><th>What It Abstracts</th><th>Container Awareness</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>PyTorch c10d ProcessGroup</b></td>
+          <td>Wraps NCCL/Gloo/MPI behind unified collective API</td>
+          <td>None. Delegates entirely to backend CCL. If NCCL falls back to TCP, c10d doesn&rsquo;t know or care.</td>
+        </tr>
+        <tr>
+          <td><b>torchcomms</b><br>(Meta, 2026)</td>
+          <td>Next-gen replacement for c10d; eager init, fault tolerance, heterogeneous hardware</td>
+          <td>Designed for 100K+ GPU scale but no container-awareness. NCCLX is first backend.</td>
+        </tr>
+        <tr>
+          <td><b>DeepSpeed comm</b></td>
+          <td>Wraps <code>torch.distributed</code>; adds gradient compression, ZeRO patterns</td>
+          <td>None. Algorithm-level optimization, not transport-level.</td>
+        </tr>
+        <tr>
+          <td><b>UCX</b></td>
+          <td>Unified communication primitives (tagged msg, RMA, atomics) across vendors</td>
+          <td>Minimal. UCX can use shared memory transport but has same namespace assumptions.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div style="background:#e3f2fd;border:2px solid #1565c0;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>Positioning:</b> XTrans operates at a layer that <b>no existing system addresses</b>.
+         It sits <i>below</i> the CCL (NCCL/RCCL/oneCCL/HCCL) and <i>above</i> the hardware fabric,
+         mediating the OS-level mechanisms (namespace, IPC, topology) that container isolation breaks.
+         It is orthogonal to algorithm-level work (NCCLbpf, MSCCL++, HiCCL), cross-vendor RDMA work
+         (HetCCL, UCCL), and cloud-native scheduling (DRA, GPU Operator). All of these can benefit
+         from XTrans.</p>
+    </div>
+
+<!-- ============================================================ -->
+    <!-- SECTION 6: RESEARCH PLAN                                    -->
+    <!-- ============================================================ -->
+
+    <h2>6. Research Plan: Phased Experiments</h2>
+
+    <p>The plan is structured as a series of experiments that progressively build the
+       XTrans system, starting from what we already know (NVIDIA/NCCL) and expanding
+       to multi-vendor and multi-fabric support.</p>
+
+    <h3>6.1 Phase 1: Systematize the NCCL Container Gates (Exp A)</h3>
+
+    <div style="background:#f5f5f5;border-left:4px solid #1565c0;padding:8px 12px;margin:20px 0 12px;font-size:15px;font-weight:bold;">
+      Exp A: NCCL Gate Taxonomy and Minimal Interception
+    </div>
+
+    <p><b>Goal:</b> Transform our ad-hoc exp2 workaround (env vars + shared mounts) into a
+       principled, minimal interception layer. Understand exactly which system calls NCCL
+       makes for each gate, and build the thinnest possible <code>LD_PRELOAD</code> shim
+       that satisfies them.</p>
+
+    <table>
+      <thead>
+        <tr><th>Task</th><th>Method</th><th>Deliverable</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>A1: Syscall tracing</b></td>
+          <td>Run NCCL under <code>strace -e trace=network,ipc,file</code> in both
+              shared-namespace and isolated-container configurations. Diff the syscall
+              traces to identify every divergence point.</td>
+          <td>Complete syscall-level map of NCCL&rsquo;s three gates. Identify any
+              additional gates beyond hostHash/shmDev/IPC socket.</td>
+        </tr>
+        <tr>
+          <td><b>A2: Minimal LD_PRELOAD shim</b></td>
+          <td>Write a C library that intercepts only the identified syscalls and returns
+              values that satisfy NCCL&rsquo;s gates. No daemon yet &mdash; hardcoded values.</td>
+          <td><code>libxtrans_nccl.so</code> (~200 LoC) that recovers NVLink P2P in
+              per-GPU containers without any <code>NCCL_*</code> env vars or shared
+              <code>/dev/shm</code>.</td>
+        </tr>
+        <tr>
+          <td><b>A3: Version stability test</b></td>
+          <td>Test the shim against NCCL 2.18, 2.19, 2.20, 2.21, 2.25, 2.27, 2.28.
+              Identify which gates changed across versions.</td>
+          <td>Compatibility matrix. Understand how fragile the interception points are.</td>
+        </tr>
+        <tr>
+          <td><b>A4: Security analysis</b></td>
+          <td>Analyze what the shim exposes. Can a malicious container use the shim to
+              access another container&rsquo;s GPU memory? What is the minimal trust model?</td>
+          <td>Threat model document. Define what &ldquo;isolation&rdquo; means when P2P is enabled.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p><b>Success criteria:</b> The shim recovers &ge;99% of NVLink bandwidth on A100 (node192)
+       without any NCCL-specific env vars, without shared <code>/dev/shm</code>, and without
+       <code>--network=host</code>. The only requirement is the shim library and a bind-mounted
+       UDS socket directory.</p>
+
+    <div style="background:#e8f5e9;border:2px solid #2e7d32;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>Why this matters:</b> This experiment transforms our exp2 finding from
+         &ldquo;here are some env vars that happen to work&rdquo; into &ldquo;here is a principled
+         interception layer with a known syscall surface, tested across NCCL versions, with a
+         defined security model.&rdquo; This is the foundation for everything that follows.</p>
+    </div>
+
+    <h3>6.2 Phase 1.5: DMA-BUF Feasibility Spike (Exp A&prime;)</h3>
+
+    <div style="background:#f5f5f5;border-left:4px solid #1565c0;padding:8px 12px;margin:20px 0 12px;font-size:15px;font-weight:bold;">
+      Exp A&prime;: DMA-BUF as Universal Cross-Container GPU Memory Sharing Primitive
+    </div>
+
+    <p><b>Goal:</b> Test whether Linux DMA-BUF file descriptors can serve as a <b>vendor-agnostic</b>
+       cross-container GPU memory sharing mechanism. This de-risks Phase 2 (AMD) and Phase 3
+       (unified daemon) by validating the key insight from pre-research: DMA-BUF FDs are
+       available on NVIDIA, AMD, and Intel, and can be passed via <code>SCM_RIGHTS</code>
+       across any container boundary.</p>
+
+    <p><b>Motivation from pre-research:</b> We discovered that all three GPU vendors expose
+       DMA-BUF export capabilities:</p>
+    <ul>
+      <li><b>NVIDIA:</b> cuMem VMM handles are internally DMA-BUF FDs on Linux</li>
+      <li><b>AMD:</b> <code>hsa_amd_portable_export_dmabuf(ptr, size, &amp;fd, &amp;offset)</code>
+          &mdash; already used by RCCL for RDMA NIC registration</li>
+      <li><b>Intel:</b> Level Zero <code>ze_ipc_mem_handle_t</code> contains a DMA-BUF FD
+          in its first 4 bytes; oneCCL&rsquo;s <code>sockets</code> mode passes these via UDS</li>
+    </ul>
+    <p>If DMA-BUF export &rarr; FD passing &rarr; DMA-BUF import &rarr; GPU P2P mapping works
+       on NVIDIA (where we have hardware), that&rsquo;s strong evidence for a universal mechanism.</p>
+
+    <table>
+      <thead>
+        <tr><th>Task</th><th>Method</th><th>Deliverable</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>A&prime;1: NVIDIA DMA-BUF P2P test</b></td>
+          <td>On node192 (A100): allocate GPU memory via cuMem VMM, export as DMA-BUF FD,
+              pass FD via UDS <code>SCM_RIGHTS</code> to a process in a different container,
+              import and map as GPU-accessible VA. Measure P2P bandwidth.</td>
+          <td>Proof that DMA-BUF FD passing enables cross-container GPU P2P on NVIDIA.
+              Bandwidth comparison vs native cuMem IPC path.</td>
+        </tr>
+        <tr>
+          <td><b>A&prime;2: DMA-BUF vs cuMem overhead</b></td>
+          <td>Compare three IPC paths on NVIDIA: (a) native cuMem FD (what exp2 uses),
+              (b) DMA-BUF export/import, (c) legacy <code>cudaIpcMemHandle</code> (requires
+              shared IPC NS). Measure init latency and steady-state bandwidth.</td>
+          <td>Quantify whether DMA-BUF adds overhead vs vendor-native IPC. If overhead is
+              &lt;1%, DMA-BUF is viable as the universal substrate.</td>
+        </tr>
+        <tr>
+          <td><b>A&prime;3: Kernel requirements</b></td>
+          <td>Identify minimum kernel version, required modules, and capabilities for
+              DMA-BUF GPU memory export on each vendor. Test on kernel 5.15 (our node192)
+              and 6.x.</td>
+          <td>Compatibility matrix for DMA-BUF GPU IPC across kernel versions.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p><b>Success criteria:</b> DMA-BUF FD passing achieves &ge;95% of native cuMem IPC bandwidth
+       on NVIDIA A100 across containers. If successful, this validates DMA-BUF as the universal
+       substrate for XTrans and significantly de-risks the AMD/Intel phases.</p>
+
+    <div style="background:#e3f2fd;border:2px solid #1565c0;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>Why this is a potential key contribution:</b> If DMA-BUF works as a universal
+         GPU IPC primitive across vendors, the paper&rsquo;s story becomes: &ldquo;We discovered that
+         a standard Linux kernel subsystem (DMA-BUF) &mdash; originally designed for graphics buffer
+         sharing &mdash; can serve as a universal cross-container GPU memory sharing mechanism,
+         eliminating the need for vendor-specific IPC workarounds.&rdquo; This is a genuine systems
+         insight, not &ldquo;transplanting cuMem.&rdquo;</p>
+    </div>
+
+    <h3>6.3 Phase 2: AMD RCCL Cross-Container Recovery (Exp B)</h3>
+
+    <div style="background:#f5f5f5;border-left:4px solid #1565c0;padding:8px 12px;margin:20px 0 12px;font-size:15px;font-weight:bold;">
+      Exp B: RCCL Gate Discovery and Infinity Fabric P2P Recovery
+    </div>
+
+    <p><b>Goal:</b> Replicate the exp2 methodology on AMD hardware. Discover RCCL&rsquo;s
+       equivalent of NCCL&rsquo;s three gates, and build a shim that recovers Infinity Fabric
+       bandwidth in per-GPU containers.</p>
+
+    <p><b>Pre-research findings that refine this phase:</b></p>
+    <ul>
+      <li>RCCL uses the <b>same three gates</b> as NCCL (<code>hostHash</code>, <code>shmDev</code>,
+          <code>pidHash</code>) &mdash; it&rsquo;s a hard fork</li>
+      <li>RCCL <b>explicitly disables cuMem VMM</b> on AMD: <code>ncclIsCuMemSupported()</code>
+          returns 0 on <code>__HIP_PLATFORM_AMD__</code></li>
+      <li>AMD has <b>three potential FD-based IPC paths</b> (HIP VMM, DMA-BUF, opaque HSA handles
+          via KFD) &mdash; none tested for cross-container P2P</li>
+    </ul>
+
+    <table>
+      <thead>
+        <tr><th>Task</th><th>Method</th><th>Deliverable</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>B1: RCCL source analysis</b></td>
+          <td>Analyze RCCL source (forked from NCCL, diverged significantly). Identify
+              topology detection (<code>/sys/class/kfd</code>, <code>rocm_smi</code>),
+              transport selection, and IPC handle exchange mechanisms. <b>Pre-research already
+              confirmed</b>: same <code>fillInfo()</code> with <code>hostHash + shmDev</code>,
+              same transport priority (P2P &gt; SHM &gt; NET), cuMem disabled.</td>
+          <td>RCCL gate taxonomy. Equivalent of our NCCL deep-dive document.</td>
+        </tr>
+        <tr>
+          <td><b>B2: Three-path IPC test</b></td>
+          <td>Test three AMD IPC paths in priority order:<br>
+              <b>(a)</b> Opaque HSA IPC handles (<code>hsa_amd_ipc_memory_create/attach</code>)
+              across containers with shared <code>/dev/kfd</code> &mdash; cheapest test, may
+              already work since KFD resolves handles kernel-side<br>
+              <b>(b)</b> DMA-BUF export (<code>hsa_amd_portable_export_dmabuf</code>) + FD passing
+              + import for GPU P2P &mdash; validates Phase 1.5 finding on AMD<br>
+              <b>(c)</b> HIP VMM FD path (<code>hipMemHandleTypePosixFileDescriptor</code>) &mdash;
+              Beta API, direct analog of NVIDIA cuMem</td>
+          <td>Determine which AMD IPC path(s) work across containers. Bandwidth comparison
+              for each working path vs native (shared-namespace) baseline.</td>
+        </tr>
+        <tr>
+          <td><b>B3: Baseline measurement</b></td>
+          <td>Measure RCCL allreduce bandwidth on MI250X or MI300X in: (a) shared container,
+              (b) per-GPU containers with default config, (c) per-GPU containers with
+              progressive fixes using the working IPC path from B2.</td>
+          <td>Bandwidth recovery curve for RCCL, analogous to our NCCL exp2 results.</td>
+        </tr>
+        <tr>
+          <td><b>B4: RCCL shim</b></td>
+          <td>Build <code>libxtrans_rccl.so</code> using the same architecture as the NCCL shim.
+              Intercept the same gates (<code>gethostname</code>, <code>stat</code>) plus any
+              AMD-specific gates discovered in B1.</td>
+          <td>Infinity Fabric P2P recovery in per-GPU containers on AMD hardware.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p><b>Hardware requirement:</b> Access to an AMD MI250X or MI300X system. Options:
+       Azure ND-MI300X-v5, AMD Accelerator Cloud, academic cluster access,
+       or collaboration with AMD research.</p>
+
+    <div style="background:#fff3e0;border:2px solid #e65100;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>Risk (updated from pre-research):</b> RCCL explicitly disables cuMem on AMD,
+         so the NVIDIA cuMem path cannot be directly transplanted. However, pre-research identified
+         <b>two alternative FD-based paths</b> (DMA-BUF via <code>hsa_amd_portable_export_dmabuf</code>
+         and HIP VMM via <code>hipMemHandleTypePosixFileDescriptor</code>) plus the possibility that
+         opaque HSA handles already work across containers via shared <code>/dev/kfd</code>.
+         If none of these work, the daemon broker (Phase 3) becomes necessary earlier &mdash; and
+         this <i>strengthens</i> the paper by showing vendors require fundamentally different
+         broker strategies.</p>
+    </div>
+
+    <h3>6.4 Phase 3: XTrans Daemon and Unified Protocol (Exp C)</h3>
+
+    <div style="background:#f5f5f5;border-left:4px solid #1565c0;padding:8px 12px;margin:20px 0 12px;font-size:15px;font-weight:bold;">
+      Exp C: Host Daemon with Vendor-Pluggable Backends
+    </div>
+
+    <p><b>Goal:</b> Unify the NCCL and RCCL shims into a single system with a host daemon
+       that provides topology service and handle brokering, and per-container shims that
+       communicate with the daemon via a vendor-neutral protocol.</p>
+
+    <table>
+      <thead>
+        <tr><th>Component</th><th>Design</th><th>Key Challenge</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>C1: Daemon topology service</b></td>
+          <td>Host daemon enumerates all GPUs (NVIDIA via NVML, AMD via rocm_smi, Intel via
+              Level Zero) and interconnects. Builds a unified topology graph. Serves topology
+              queries via UDS.</td>
+          <td>Unified topology representation across vendors. NVLink mesh vs xGMI mesh vs
+              Xe Link star have different structures.</td>
+        </tr>
+        <tr>
+          <td><b>C2: Handle broker protocol</b></td>
+          <td>Define a simple protocol for handle exchange:<br>
+              <code>EXPORT(container_id, gpu_id, handle_type, handle_data) &rarr; handle_id</code><br>
+              <code>IMPORT(handle_id) &rarr; handle_data</code><br>
+              For FD-based handles (cuMem): use <code>SCM_RIGHTS</code> relay.<br>
+              For opaque handles (HSA IPC, L0 IPC): use SHM segment relay.</td>
+          <td>FD passing requires the daemon to receive and re-send FDs. Latency of the
+              relay must be &lt;1ms to not affect NCCL init time.</td>
+        </tr>
+        <tr>
+          <td><b>C3: Vendor backend plugins</b></td>
+          <td>Each vendor backend implements:<br>
+              <code>discover_gpus() &rarr; [GpuInfo]</code><br>
+              <code>discover_links(gpu_a, gpu_b) &rarr; LinkInfo</code><br>
+              <code>export_handle(gpu_id, alloc) &rarr; Handle</code><br>
+              <code>import_handle(handle) &rarr; mapping</code></td>
+          <td>Abstracting vendor-specific GPU memory allocation and IPC mechanisms behind
+              a common interface without losing performance.</td>
+        </tr>
+        <tr>
+          <td><b>C4: Unified shim library</b></td>
+          <td>Single <code>libxtrans.so</code> that detects which CCL is loaded (NCCL vs RCCL
+              vs oneCCL) and applies the appropriate interceptions. Communicates with daemon
+              for topology and handle exchange.</td>
+          <td>Detecting CCL type at runtime. Handling version differences within each CCL.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h4>C5: Protocol Design Sketch</h4>
+
+    <pre style="font-family:'Courier New',Courier,monospace;font-size:12px;background:#f8f8f8;border:1px solid #ddd;padding:12px 16px;margin:12px 0;overflow-x:auto;line-height:1.5;">
+// XTrans wire protocol (over UDS)
+// All messages are length-prefixed protobuf or msgpack
+
+// --- Topology Service ---
+
+message TopologyRequest {
+  string container_id = 1;
+  string ccl_type = 2;      // "nccl", "rccl", "oneccl", "hccl"
+}
+
+message TopologyResponse {
+  repeated GpuNode gpus = 1;
+  repeated FabricLink links = 2;
+  bytes ccl_topology_blob = 3;  // Vendor-specific: NCCL XML, RCCL topo, etc.
+  map&lt;string, string&gt; env_overrides = 4;  // e.g., NCCL_HOSTID, RCCL_HOSTID
+}
+
+message GpuNode {
+  int32 global_id = 1;       // Host-wide GPU index
+  int32 container_id = 2;    // Which container owns this GPU
+  string bus_id = 3;         // PCIe BDF
+  string vendor = 4;         // "nvidia", "amd", "intel", "huawei"
+  string fabric_type = 5;    // "nvlink", "xgmi", "xe_link", "hccs", "pcie"
+}
+
+message FabricLink {
+  int32 gpu_a = 1;
+  int32 gpu_b = 2;
+  string fabric_type = 3;
+  int64 bandwidth_gbps = 4;
+  int32 hops = 5;
+}
+
+// --- Handle Broker ---
+
+message ExportHandleRequest {
+  string container_id = 1;
+  int32 gpu_id = 2;
+  string handle_type = 3;    // "cumem_fd", "hsa_ipc", "l0_ipc", "shm"
+  bytes handle_data = 4;     // Opaque handle bytes (or empty for FD-based)
+  // For FD-based: the FD is sent via SCM_RIGHTS ancillary data
+}
+
+message ExportHandleResponse {
+  string handle_id = 1;      // Globally unique handle identifier
+}
+
+message ImportHandleRequest {
+  string container_id = 1;
+  string handle_id = 2;
+}
+
+message ImportHandleResponse {
+  string handle_type = 1;
+  bytes handle_data = 2;
+  // For FD-based: the FD is received via SCM_RIGHTS ancillary data
+}</pre>
+
+    <p><b>Success criteria:</b> A single <code>libxtrans.so</code> + <code>xtransd</code> daemon
+       that recovers native interconnect bandwidth for both NCCL (NVLink) and RCCL (Infinity Fabric)
+       in per-GPU containers, with &lt;1% overhead compared to the vendor-specific shims from
+       Phases 1&ndash;2.</p>
+
+    <h3>6.5 Phase 4: Benchmarking and Characterization (Exp D)</h3>
+
+    <div style="background:#f5f5f5;border-left:4px solid #1565c0;padding:8px 12px;margin:20px 0 12px;font-size:15px;font-weight:bold;">
+      Exp D: Comprehensive Cross-Vendor, Cross-Fabric Evaluation
+    </div>
+
+    <p><b>Goal:</b> Rigorous evaluation of XTrans across multiple hardware platforms,
+       container runtimes, CCL versions, and workloads.</p>
+
+    <table>
+      <thead>
+        <tr><th>Dimension</th><th>Configurations</th><th>Metrics</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Hardware</b></td>
+          <td>NVIDIA A100 (NVLink 3.0), NVIDIA H100 (NVLink 4.0),
+              AMD MI250X (xGMI), AMD MI300X (xGMI),
+              [stretch] Intel PVC (Xe Link)</td>
+          <td>Allreduce bandwidth, P2P bandwidth, latency (1B&ndash;1GB)</td>
+        </tr>
+        <tr>
+          <td><b>CCL versions</b></td>
+          <td>NCCL 2.18&ndash;2.28, RCCL latest, [stretch] oneCCL latest</td>
+          <td>Bandwidth recovery ratio vs shared-namespace baseline</td>
+        </tr>
+        <tr>
+          <td><b>Container runtimes</b></td>
+          <td>Docker (runc), containerd, CRI-O, [stretch] Kata Containers</td>
+          <td>Compatibility, setup overhead, security posture</td>
+        </tr>
+        <tr>
+          <td><b>Isolation levels</b></td>
+          <td>Full isolation (private IPC, PID, network, mount namespaces),
+              partial isolation (shared network only),
+              no isolation (baseline)</td>
+          <td>Bandwidth vs isolation tradeoff curve</td>
+        </tr>
+        <tr>
+          <td><b>Workloads</b></td>
+          <td>NCCL-tests (allreduce, allgather, reduce-scatter),
+              vLLM inference (Qwen3-4B/8B/14B, TP=2/4),
+              PyTorch training (ResNet-50, GPT-2 small)</td>
+          <td>End-to-end throughput, TPOT, TTFT, training step time</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h4>Key Comparisons</h4>
+
+    <ol>
+      <li><b>XTrans vs no isolation (baseline):</b> What is the overhead of the shim + daemon?
+          Target: &lt;1% for steady-state communication, &lt;100ms for initialization.</li>
+      <li><b>XTrans vs <code>--ipc=host</code>:</b> How much bandwidth do we recover compared
+          to destroying isolation entirely? Target: &ge;99%.</li>
+      <li><b>XTrans vs TCP fallback:</b> How much do we gain over the default container behavior?
+          Expected: 2&ndash;10&times; for NVLink, 3&ndash;5&times; for xGMI.</li>
+      <li><b>XTrans vs NVIDIA IMEX:</b> On hardware where IMEX is available (GB200), how does
+          XTrans compare? This positions XTrans as the vendor-agnostic alternative.</li>
+      <li><b>Cross-vendor:</b> Same XTrans daemon managing NVIDIA + AMD GPUs on the same node
+          (if such hardware exists). Demonstrate that the abstraction works.</li>
+    </ol>
+
+    <h3>6.6 Phase 5: Kubernetes Integration (Exp E)</h3>
+
+    <div style="background:#f5f5f5;border-left:4px solid #1565c0;padding:8px 12px;margin:20px 0 12px;font-size:15px;font-weight:bold;">
+      Exp E: XTrans as a Kubernetes DaemonSet with DRA Integration
+    </div>
+
+    <p><b>Goal:</b> Deploy XTrans in a Kubernetes cluster, integrating with DRA for
+       topology-aware GPU scheduling and automatic shim injection.</p>
+
+    <table>
+      <thead>
+        <tr><th>Task</th><th>Design</th><th>Deliverable</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>E1: DaemonSet deployment</b></td>
+          <td><code>xtransd</code> runs as a privileged DaemonSet on every GPU node.
+              Exposes UDS socket via <code>hostPath</code> volume.</td>
+          <td>Helm chart for XTrans deployment.</td>
+        </tr>
+        <tr>
+          <td><b>E2: Mutating webhook</b></td>
+          <td>Kubernetes mutating admission webhook that automatically injects
+              <code>libxtrans.so</code> and UDS volume mount into pods that request
+              GPU resources.</td>
+          <td>Zero-config XTrans for GPU pods. Users don&rsquo;t need to know XTrans exists.</td>
+        </tr>
+        <tr>
+          <td><b>E3: DRA integration</b></td>
+          <td>XTrans daemon reads DRA <code>ResourceSlice</code> topology information
+              to build its topology graph. DRA driver can annotate pods with XTrans
+              hints (which GPUs are co-located, which fabric connects them).</td>
+          <td>Topology-aware communication setup driven by K8s scheduling decisions.</td>
+        </tr>
+        <tr>
+          <td><b>E4: Multi-tenant evaluation</b></td>
+          <td>Two independent GPU workloads on the same node, each in per-GPU containers,
+              both using XTrans. Verify isolation (workload A cannot access workload B&rsquo;s
+              GPU memory) while both achieve native bandwidth.</td>
+          <td>Security evaluation + performance characterization under multi-tenancy.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div style="background:#e8f5e9;border:2px solid #2e7d32;border-radius:6px;padding:12px 16px;margin:16px 0;">
+      <p style="margin:0"><b>Paper story:</b> Phase 5 demonstrates that XTrans is not just a research
+         prototype but a deployable system. The K8s integration shows the path from
+         &ldquo;interesting mechanism&rdquo; to &ldquo;production infrastructure.&rdquo;</p>
+    </div>
+
+<!-- ============================================================ -->
+    <!-- SECTION 7: PAPER FRAMING                                    -->
+    <!-- ============================================================ -->
+
+    <h2>7. Paper Framing</h2>
+
+    <h3>7.1 Two Possible Paper Strategies</h3>
+
+    <p>The research plan supports two distinct paper framings, depending on how far
+       we get and which results are strongest:</p>
+
+    <table>
+      <thead>
+        <tr><th>Aspect</th><th>Paper A: Systems Paper</th><th>Paper B: Measurement + Mechanism Paper</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Title style</b></td>
+          <td>&ldquo;XTrans: Fabric-Agnostic Cross-Container GPU Communication&rdquo;</td>
+          <td>&ldquo;Breaking the Isolation-Performance Tradeoff: How GPU CCLs Fail in Containers and How to Fix Them&rdquo;</td>
+        </tr>
+        <tr>
+          <td><b>Requires</b></td>
+          <td>Phases 1&ndash;4 complete (NVIDIA + AMD + daemon + evaluation)</td>
+          <td>Phases 1&ndash;2 complete (NVIDIA + AMD gate taxonomy + shims)</td>
+        </tr>
+        <tr>
+          <td><b>Core contribution</b></td>
+          <td>A deployable system with vendor-pluggable backends, evaluated across
+              hardware platforms and container runtimes</td>
+          <td>First systematic analysis of how container isolation breaks GPU CCLs
+              across vendors; minimal interception mechanisms that recover native bandwidth</td>
+        </tr>
+        <tr>
+          <td><b>Venue fit</b></td>
+          <td>OSDI, SOSP, NSDI, EuroSys (systems)</td>
+          <td>ATC, ASPLOS, IMC (measurement + mechanism)</td>
+        </tr>
+        <tr>
+          <td><b>Strength</b></td>
+          <td>Complete system story; K8s integration; multi-vendor</td>
+          <td>Deep technical insight; reproducible; immediately useful to practitioners</td>
+        </tr>
+        <tr>
+          <td><b>Risk</b></td>
+          <td>Requires AMD hardware access; daemon engineering effort is substantial</td>
+          <td>May be seen as &ldquo;just a measurement paper&rdquo; without the system</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p><b>Recommendation:</b> Target Paper B first (Phases 1&ndash;2), then extend to Paper A
+       (Phases 3&ndash;5). Paper B can be submitted earlier and establishes priority on the
+       core insight. Paper A builds on it with the full system.</p>
+
+    <h3>7.2 Paper B Outline (Measurement + Mechanism)</h3>
+
+    <table>
+      <thead>
+        <tr><th>Section</th><th>Content</th><th>Source</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>1. Introduction</b></td>
+          <td>GPU containers are everywhere (K8s, cloud); every CCL assumes shared namespaces;
+              container isolation universally breaks intra-node GPU communication; nobody has
+              systematically studied this or proposed vendor-agnostic fixes</td>
+          <td>Section 3 of this plan</td>
+        </tr>
+        <tr>
+          <td><b>2. Background</b></td>
+          <td>Linux namespaces and container isolation; GPU CCL architecture (topology &rarr;
+              transport &rarr; IPC &rarr; data); vendor landscape (NCCL, RCCL, oneCCL, HCCL)</td>
+          <td>Section 3 + related work</td>
+        </tr>
+        <tr>
+          <td><b>3. Anatomy of the Break</b></td>
+          <td>Systematic analysis of how each CCL&rsquo;s intra-node communication fails under
+              container isolation. NCCL: three gates (hostHash, shmDev, IPC socket) with
+              source-level evidence. RCCL: equivalent gates (from Exp B). Side-by-side
+              comparison showing the universal pattern.</td>
+          <td>Exp A (NCCL) + Exp B (RCCL)</td>
+        </tr>
+        <tr>
+          <td><b>4. Recovery Mechanisms</b></td>
+          <td>For each vendor: the minimal interception that recovers native bandwidth.
+              NCCL: cuMem VMM + syscall shim. RCCL: [determined by Exp B]. Unified
+              interception architecture (LD_PRELOAD + UDS broker).</td>
+          <td>Exp A + Exp B shim implementations</td>
+        </tr>
+        <tr>
+          <td><b>5. Evaluation</b></td>
+          <td>Bandwidth recovery across vendors, NCCL versions, container runtimes.
+              End-to-end LLM inference (vLLM) and training (PyTorch DDP) validation.
+              Security analysis of the interception surface.</td>
+          <td>Exp D (subset)</td>
+        </tr>
+        <tr>
+          <td><b>6. Discussion</b></td>
+          <td>Why CCL designers should care; implications for K8s GPU scheduling;
+              path to a unified XTrans system; UALink and future fabrics</td>
+          <td>Sections 4, 5.4, 5.5</td>
+        </tr>
+        <tr>
+          <td><b>7. Related Work</b></td>
+          <td>CCL internals (Demystifying NCCL, NCCLbpf); cross-vendor (HetCCL, UCCL, HiCCL);
+              GPU virtualization (GPU-Virt-Bench); cloud-native GPU (DRA, IMEX, ComputeDomains);
+              elastic serving (Flying Serving, Gyges) as motivation for per-GPU containers</td>
+          <td>Section 5</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>7.3 Paper A Outline (Full System)</h3>
+
+    <table>
+      <thead>
+        <tr><th>Section</th><th>Content</th><th>Source</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>1. Introduction</b></td>
+          <td>Same motivation + &ldquo;we built XTrans, a fabric-agnostic cross-container
+              GPU communication system&rdquo;</td>
+          <td>&mdash;</td>
+        </tr>
+        <tr>
+          <td><b>2. Background &amp; Motivation</b></td>
+          <td>Container isolation breaks; vendor fragmentation; no existing solution</td>
+          <td>Sections 3, 5</td>
+        </tr>
+        <tr>
+          <td><b>3. XTrans Design</b></td>
+          <td>Three-layer architecture; topology service; handle broker; CCL shim;
+              vendor backend plugin interface; protocol design</td>
+          <td>Section 4, Exp C</td>
+        </tr>
+        <tr>
+          <td><b>4. Implementation</b></td>
+          <td>NVIDIA backend (cuMem FD relay); AMD backend (HSA IPC relay);
+              daemon implementation; shim library; K8s integration</td>
+          <td>Exp A, B, C, E</td>
+        </tr>
+        <tr>
+          <td><b>5. Evaluation</b></td>
+          <td>Full Exp D evaluation + K8s multi-tenant evaluation (Exp E)</td>
+          <td>Exp D, E</td>
+        </tr>
+        <tr>
+          <td><b>6. Discussion</b></td>
+          <td>Lessons learned; limitations; future fabrics (UALink, CXL);
+              relationship to NVIDIA IMEX; open-source release</td>
+          <td>&mdash;</td>
+        </tr>
+        <tr>
+          <td><b>7. Related Work</b></td>
+          <td>Extended version of Paper B related work</td>
+          <td>Section 5</td>
+        </tr>
+      </tbody>
+    </table>
+
+<!-- ============================================================ -->
+    <!-- SECTION 8: TIMELINE                                         -->
+    <!-- ============================================================ -->
+
+    <h2>8. Timeline and Dependencies</h2>
+
+    <table>
+      <thead>
+        <tr><th style="width:80px">Phase</th><th>Experiment</th><th>Hardware</th><th>Dependencies</th><th>Estimated Effort</th><th>Risk</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Phase 1</b></td>
+          <td>Exp A: NCCL gate taxonomy + minimal shim</td>
+          <td>node192 (A100 NVLink) &mdash; <i>available now</i></td>
+          <td>Exp2 results (done)</td>
+          <td>2&ndash;3 weeks</td>
+          <td style="color:#2e7d32;font-weight:bold">Low</td>
+        </tr>
+        <tr>
+          <td><b>Phase 1.5</b></td>
+          <td>Exp A&prime;: DMA-BUF feasibility spike &mdash; test DMA-BUF FD passing for
+              cross-container GPU P2P on NVIDIA</td>
+          <td>node192 (A100 NVLink) &mdash; <i>available now</i></td>
+          <td>Phase 1 (shim infrastructure)</td>
+          <td>1&ndash;2 weeks</td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+        </tr>
+        <tr>
+          <td><b>Phase 2</b></td>
+          <td>Exp B: RCCL gate discovery + three-path IPC test + Infinity Fabric recovery</td>
+          <td>AMD MI250X or MI300X &mdash; <i>need access</i></td>
+          <td>Phase 1 methodology; Phase 1.5 DMA-BUF results; AMD hardware access</td>
+          <td>3&ndash;4 weeks</td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+        </tr>
+        <tr>
+          <td><b>Phase 3</b></td>
+          <td>Exp C: XTrans daemon + unified protocol</td>
+          <td>Both NVIDIA + AMD systems</td>
+          <td>Phases 1 + 2</td>
+          <td>4&ndash;6 weeks</td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+        </tr>
+        <tr>
+          <td><b>Phase 4</b></td>
+          <td>Exp D: Cross-vendor, cross-fabric evaluation</td>
+          <td>Multiple platforms (A100, H100, MI250X/MI300X)</td>
+          <td>Phase 3</td>
+          <td>3&ndash;4 weeks</td>
+          <td style="color:#2e7d32;font-weight:bold">Low</td>
+        </tr>
+        <tr>
+          <td><b>Phase 5</b></td>
+          <td>Exp E: Kubernetes integration</td>
+          <td>K8s cluster with GPU nodes</td>
+          <td>Phase 3</td>
+          <td>3&ndash;4 weeks</td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <pre style="font-family:'Courier New',Courier,monospace;font-size:12px;background:#f8f8f8;border:1px solid #ddd;padding:12px 16px;margin:12px 0;overflow-x:auto;line-height:1.5;">
+Critical Path:
+
+  Phase 1 (NCCL shim)
+    |
+    v
+  Phase 1.5 (DMA-BUF spike) ----+
+    |                            |
+    | DMA-BUF works?             | DMA-BUF fails?
+    |                            |
+    v                            v
+  Phase 2 (RCCL: test 3 paths)  Phase 2 (RCCL: broker needed early)
+    |                            |
+    +----------+-----------------+
+               |
+               v
+         Decision Point:
+         +---------------------------+---------------------------+
+         |                           |                           |
+         v                           v                           v
+    Full XTrans              Measurement Paper           DMA-BUF Paper
+    (Phases 3-5)             (Fallback A)                (Fallback C)
+    Paper A: OSDI/SOSP       Paper B: ATC/EuroSys        Paper: ATC/ASPLOS
+         |
+         +-------+
+         |       |
+         v       v
+       Phase 4  Phase 5 (parallel)
+         |       |
+         +---+---+
+             |
+             v
+       [Paper A: Full System]</pre>
+
+    <h2>9. Risks and Mitigations</h2>
+
+    <table>
+      <thead>
+        <tr><th>Risk</th><th>Severity</th><th>Pre-Research Status</th><th>Mitigation</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>AMD hardware access</b> &mdash; no MI250X/MI300X available in our lab</td>
+          <td style="color:#c44e52;font-weight:bold">High</td>
+          <td>Unchanged. Still need cloud access.</td>
+          <td>Cloud instances (Azure ND-MI300X-v5, AMD Accelerator Cloud). Begin RCCL source
+              analysis in parallel (open source, pre-research already confirmed gate structure).
+              Worst case: Paper B with NCCL + Intel + RCCL source analysis (no AMD experiments).</td>
+        </tr>
+        <tr>
+          <td><b>RCCL has no cuMem-equivalent</b> &mdash; AMD HSA IPC may require shared
+              IPC namespace with no FD-based bypass</td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+          <td style="color:#2e7d32;font-weight:bold">Partially de-risked.</td>
+          <td>Pre-research found <b>three</b> potential AMD FD-based paths: (1) HIP VMM with
+              <code>hipMemHandleTypePosixFileDescriptor</code> (Beta API), (2) DMA-BUF via
+              <code>hsa_amd_portable_export_dmabuf</code> (kernel-mature), (3) opaque HSA handles
+              may work across containers via shared <code>/dev/kfd</code> (needs testing).
+              If none work, this is itself a finding that strengthens the broker argument.</td>
+        </tr>
+        <tr>
+          <td><b>LD_PRELOAD fragility</b> &mdash; CCL updates may change syscall patterns</td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+          <td style="color:#2e7d32;font-weight:bold">De-risked.</td>
+          <td>Pre-research confirmed: NCCL/RCCL/oneCCL are always shared libraries with dynamic
+              libc linkage. The intercepted functions (<code>gethostname</code>, <code>stat</code>)
+              are POSIX syscalls, not vendor APIs. dlopen&rsquo;d plugins don&rsquo;t bypass
+              LD_PRELOAD for libc calls. Published precedents: Trickle (ATC&rsquo;05), HetCCL (2026),
+              PhoenixOS (SOSP&rsquo;24). Hybrid approach (LD_PRELOAD + bind mounts) reduces
+              interception surface to just two functions.</td>
+        </tr>
+        <tr>
+          <td><b>Security concerns</b> &mdash; reviewers may argue that enabling P2P across
+              containers weakens isolation</td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+          <td>Unchanged.</td>
+          <td>Phase 1 task A4 produces a threat model. Key argument: XTrans provides
+              <i>controlled</i> P2P (only between containers registered with the daemon,
+              with per-handle access control) vs the status quo of <code>--ipc=host</code>
+              which provides <i>uncontrolled</i> access to all host IPC. XTrans is strictly
+              better than current practice.</td>
+        </tr>
+        <tr>
+          <td><b>Performance overhead of daemon relay</b></td>
+          <td style="color:#2e7d32;font-weight:bold">Low</td>
+          <td style="color:#2e7d32;font-weight:bold">Confirmed low.</td>
+          <td>Handle exchange happens once during NCCL init, not on the data path. LD_PRELOAD
+              overhead is ~1&ndash;5ns per call. Steady-state communication goes directly over
+              NVLink/xGMI with zero daemon involvement.</td>
+        </tr>
+        <tr>
+          <td><b>Paper seen as &ldquo;just engineering&rdquo;</b></td>
+          <td style="color:#c44e52;font-weight:bold">High</td>
+          <td style="color:#e65100;font-weight:bold">Key risk &mdash; requires careful framing.</td>
+          <td>Pre-research identified four elevation strategies (Section 2.6): (1) cross-vendor
+              failure taxonomy, (2) DMA-BUF as universal GPU IPC substrate, (3) GPU isolation
+              spectrum model, (4) minimal interception surface completeness argument. Frame around
+              the <i>understanding</i> of why GPU communication breaks universally, not the daemon.
+              Precedent: &ldquo;Simple Testing&rdquo; (OSDI&rsquo;14) was accepted for discovering
+              a universal failure pattern across diverse systems.</td>
+        </tr>
+        <tr>
+          <td><b>NVIDIA closes the gap</b> &mdash; IMEX expansion or NCCL container-aware transport</td>
+          <td style="color:#2e7d32;font-weight:bold">Low</td>
+          <td style="color:#2e7d32;font-weight:bold">De-risked.</td>
+          <td>Pre-research confirms: IMEX is GB200-only with no expansion plans. NCCL has no
+              intra-node transport plugin interface. NVIDIA&rsquo;s container strategy focuses on
+              stronger isolation (Confidential Containers), not easier sharing. Even if NVIDIA
+              expands IMEX, it remains single-vendor and proprietary.</td>
+        </tr>
+        <tr>
+          <td><b>Scope creep</b></td>
+          <td style="color:#e65100;font-weight:bold">Medium</td>
+          <td>Unchanged.</td>
+          <td>Paper B requires only NVIDIA + AMD (or NVIDIA + Intel if AMD hardware unavailable).
+              Phase 1.5 DMA-BUF spike provides early go/no-go signal. Three fallback directions
+              defined (Section 2.8) if full XTrans scope proves infeasible.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>10. Relationship to Direction B (Elastic Serving)</h2>
+
+    <p>Directions B and C are <b>complementary, not competing</b>:</p>
+
+    <table>
+      <thead>
+        <tr><th>Aspect</th><th>Direction B</th><th>Direction C (This Plan)</th><th>Synergy</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>What it builds</b></td>
+          <td>Elastic TP resize, fault recovery, GPU orchestrator</td>
+          <td>Cross-container GPU communication abstraction</td>
+          <td>Direction B <i>uses</i> Direction C as its communication layer</td>
+        </tr>
+        <tr>
+          <td><b>NCCL re-init</b></td>
+          <td>Needs <code>ncclCommAbort</code> + <code>ncclCommInitRank</code> across containers</td>
+          <td>XTrans daemon can broker the new <code>ncclUniqueId</code> distribution</td>
+          <td>XTrans makes NCCL re-init across containers reliable</td>
+        </tr>
+        <tr>
+          <td><b>Multi-vendor</b></td>
+          <td>NVIDIA only (vLLM + NCCL)</td>
+          <td>NVIDIA + AMD + Intel + Huawei</td>
+          <td>Direction C enables elastic serving on AMD/Intel hardware</td>
+        </tr>
+        <tr>
+          <td><b>Paper independence</b></td>
+          <td>Can be written without Direction C (using exp2 env var workaround)</td>
+          <td>Can be written without Direction B (pure communication focus)</td>
+          <td>Combined paper would be very strong but either stands alone</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>The recommended strategy is to pursue Direction C first (Phases 1&ndash;2), which
+       produces Paper B and establishes the communication foundation. Then Direction B&rsquo;s
+       experiments (fault recovery, TP resize) can be built on top of XTrans rather than
+       the fragile env var workaround, producing a stronger combined system.</p>
+
+    <h2>11. Immediate Next Steps</h2>
+
+    <ol>
+      <li><b>Start Exp A1 (syscall tracing):</b> Run NCCL under <code>strace</code> in
+          per-GPU containers on node192. Capture the complete syscall trace for both
+          working (exp2 CUMEM config) and broken (naive isolation) configurations.
+          Diff the traces to build the definitive gate map.</li>
+
+      <li><b>Prototype the LD_PRELOAD shim:</b> Based on A1 results, write the minimal
+          C shim that intercepts the identified syscalls. Pre-research confirms the target
+          is just <code>gethostname()</code> and <code>stat()</code> &mdash; both are libc calls
+          in dynamically-linked NCCL. Use bind mounts for file-based interception
+          (<code>/proc/sys/kernel/random/boot_id</code>). Test on node192 with NCCL 2.21.
+          Goal: recover NVLink P2P without any <code>NCCL_*</code> env vars.</li>
+
+      <li><b>DMA-BUF feasibility spike (Phase 1.5):</b> On node192, write a minimal
+          test program that: (a) allocates GPU memory via cuMem VMM, (b) exports as DMA-BUF FD,
+          (c) passes FD via UDS <code>SCM_RIGHTS</code> to a process in a different container,
+          (d) imports and maps as GPU VA, (e) measures P2P bandwidth. This is the single most
+          important de-risking experiment &mdash; if DMA-BUF works as a universal GPU IPC
+          primitive on NVIDIA, the cross-vendor story becomes much stronger.</li>
+
+      <li><b>Secure AMD hardware access:</b> Apply for Azure ND-MI300X-v5 credits or
+          AMD Accelerator Cloud access.</li>
+
+      <li><b>RCCL source analysis:</b> Pre-research already confirmed that RCCL uses
+          the same three gates (<code>hostHash</code>, <code>shmDev</code>, <code>pidHash</code>)
+          and explicitly disables cuMem on AMD. Remaining work: document the three alternative
+          IPC paths (opaque HSA handles via <code>/dev/kfd</code>, DMA-BUF via
+          <code>hsa_amd_portable_export_dmabuf</code>, HIP VMM FD) in detail. Prepare test
+          programs for each path so they&rsquo;re ready when AMD hardware arrives.</li>
+
+      <li><b>Prepare supervisor discussion:</b> Present the pre-research findings
+          (Section 2) to supervisor. Key talking points:
+          <ul>
+            <li>This is <b>not</b> transplanting cuMem &mdash; vendor IPC mechanisms are fundamentally
+                divergent (FD vs opaque blob vs DMA-BUF, different kernel drivers)</li>
+            <li>DMA-BUF as potential universal substrate is a genuine systems insight</li>
+            <li>The gap in the literature is real &mdash; nobody addresses cross-container intra-node
+                GPU communication</li>
+            <li>NVIDIA will not solve this (IMEX is GB200-only, no intra-node transport plugin)</li>
+            <li>Three fallback directions exist if full XTrans scope proves infeasible</li>
+          </ul>
+      </li>
+    </ol>
+
+    <hr style="border:none;border-top:2px solid #333;margin:36px 0 24px;">
+
+    <h2>Appendix A: Key References</h2>
+
+    <table>
+      <thead>
+        <tr><th>Reference</th><th>Year</th><th>Relevance</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>NCCLbpf: Verified, Composable Policy Execution for GPU Collective Communication (Zheng, UC Santa Cruz)</td>
+          <td>2026</td>
+          <td>eBPF policy injection into NCCL; demonstrates plugin extensibility</td>
+        </tr>
+        <tr>
+          <td>NCCLX / CTran: Collective Communication for 100K+ GPUs (Meta)</td>
+          <td>2025</td>
+          <td>Custom transport alongside NCCL; architectural pattern for transport coexistence</td>
+        </tr>
+        <tr>
+          <td>Demystifying NCCL (ETH Zurich + NVIDIA)</td>
+          <td>2025</td>
+          <td>Comprehensive NCCL internals; confirms container performance degradation</td>
+        </tr>
+        <tr>
+          <td>HetCCL: Cross-Vendor CCL (Kim et al.)</td>
+          <td>2025</td>
+          <td>LD_PRELOAD interception of NCCL/RCCL; RDMA-based cross-vendor communication</td>
+        </tr>
+        <tr>
+          <td>UCCL: Ultra-CCL Software Transport (arXiv)</td>
+          <td>2025</td>
+          <td>Drop-in NCCL NET plugin; demonstrates extensible transport architecture</td>
+        </tr>
+        <tr>
+          <td>MSCCL++: Rethinking GPU Communication Abstractions (Microsoft)</td>
+          <td>2024</td>
+          <td>Three-layer communication abstraction; MemoryChannel/PortChannel/SwitchChannel</td>
+        </tr>
+        <tr>
+          <td>HiCCL: Hierarchical CCL (arXiv)</td>
+          <td>2024</td>
+          <td>Vendor-agnostic collective library; compositional primitives</td>
+        </tr>
+        <tr>
+          <td>NCCL 2.27: Symmetric Memory + ncclCommShrink (NVIDIA)</td>
+          <td>2025</td>
+          <td>cuMem VMM for symmetric buffers; dynamic communicator shrinking</td>
+        </tr>
+        <tr>
+          <td>NCCL 2.28: Device API + GIN (NVIDIA)</td>
+          <td>2025</td>
+          <td>GPU-initiated networking; LSA/Multimem/GIN I/O modes</td>
+        </tr>
+        <tr>
+          <td>torchcomms (Meta)</td>
+          <td>2026</td>
+          <td>Next-gen PyTorch communication layer; heterogeneous hardware support</td>
+        </tr>
+        <tr>
+          <td>RCCLX (Meta)</td>
+          <td>2026</td>
+          <td>Enhanced RCCL with CTran transport; DDA for low-latency intra-node</td>
+        </tr>
+        <tr>
+          <td>GPU-Virt-Bench (Bud Ecosystem)</td>
+          <td>2025</td>
+          <td>GPU virtualization benchmarking; HAMi vs MIG; defines NCCL/P2P metrics</td>
+        </tr>
+        <tr>
+          <td>Zettabyte AI: Joint Training on AMD + NVIDIA (arXiv)</td>
+          <td>2025</td>
+          <td>Mixed-vendor training via GPUDirect RDMA; 98.2% homogeneous throughput</td>
+        </tr>
+        <tr>
+          <td>UALink 1.0 Specification</td>
+          <td>2025</td>
+          <td>Open GPU interconnect standard; 1,024 accelerators; multi-vendor</td>
+        </tr>
+        <tr>
+          <td>CXL 4.0 Specification</td>
+          <td>2025</td>
+          <td>Memory-semantic interconnect; pooled memory; complementary to GPU P2P</td>
+        </tr>
+        <tr>
+          <td>NVIDIA IMEX Daemon + ComputeDomains</td>
+          <td>2025</td>
+          <td>NVIDIA&rsquo;s proprietary cross-container GPU communication for GB200+</td>
+        </tr>
+        <tr>
+          <td>K8s DRA (Dynamic Resource Allocation) GA</td>
+          <td>2026</td>
+          <td>Topology-aware GPU scheduling in Kubernetes</td>
+        </tr>
+        <tr>
+          <td>NVIDIA Kata Containers GPU Support</td>
+          <td>2025&ndash;2026</td>
+          <td>GPU passthrough to microVMs; strongest isolation model</td>
+        </tr>
+        <tr>
+          <td>The Landscape of GPU-Centric Communication (survey)</td>
+          <td>2024</td>
+          <td>Comprehensive survey of vendor communication mechanisms</td>
+        </tr>
+        <tr>
+          <td>PGL: Parallel Global Layout (Hazy Research, Stanford)</td>
+          <td>2025</td>
+          <td>Documents three GPU memory sharing methods (UVA, cudaIPC, VMM)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Additional References</h3>
+
+    <table>
+      <thead>
+        <tr><th>Reference</th><th>Year</th><th>Relevance</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Trickle: A Userland Bandwidth Shaper for Unix-like Systems (USENIX ATC)</td>
+          <td>2005</td>
+          <td>Canonical LD_PRELOAD interposition paper; validates technique for systems research</td>
+        </tr>
+        <tr>
+          <td>PhoenixOS / POS: GPU Checkpoint/Restore (SOSP &rsquo;24 / OSDI &rsquo;25)</td>
+          <td>2024&ndash;2025</td>
+          <td>CUDA API interception via library interposition; precedent for LD_PRELOAD in GPU systems</td>
+        </tr>
+        <tr>
+          <td>Simple Testing Can Prevent Most Critical Failures (Yuan et al., OSDI)</td>
+          <td>2014</td>
+          <td>Precedent for &ldquo;universal pattern discovery&rdquo; paper at top venue; analyzed 198 failures across 5 systems</td>
+        </tr>
+        <tr>
+          <td>An Analysis of Linux Scalability to Many Cores (Boyd-Wickizer et al., OSDI)</td>
+          <td>2010</td>
+          <td>Precedent for measurement + targeted fix paper; identified common bottleneck patterns across applications</td>
+        </tr>
+        <tr>
+          <td>oneCCL: IPC Exchange Modes (source code analysis: <code>ze_fd_manager.cpp</code>)</td>
+          <td>2026</td>
+          <td>Three IPC exchange modes (pidfd/drmfd/sockets); <code>sockets</code> mode demonstrates cross-PID-namespace DMA-BUF FD passing via UDS</td>
+        </tr>
+        <tr>
+          <td>Level Zero IPC Memory Handle Type Extension Specification</td>
+          <td>2025</td>
+          <td>Confirms <code>ze_ipc_mem_handle_t</code> contains DMA-BUF FD; documents handle type extension</td>
+        </tr>
+        <tr>
+          <td>ROCm HIP Virtual Memory Management API</td>
+          <td>2025</td>
+          <td><code>hipMemHandleTypePosixFileDescriptor</code> &mdash; AMD&rsquo;s cuMem-equivalent FD-based IPC (Beta)</td>
+        </tr>
+        <tr>
+          <td>ROCm HSA Runtime: <code>hsa_amd_portable_export_dmabuf</code></td>
+          <td>2025</td>
+          <td>AMD DMA-BUF export for GPU memory; used by RCCL for RDMA registration; potential cross-container IPC path</td>
+        </tr>
+        <tr>
+          <td>Linux KFD: <code>AMDKFD_IOC_EXPORT_DMABUF</code> ioctl</td>
+          <td>2024</td>
+          <td>Kernel-level DMA-BUF export from AMD GPU memory via <code>/dev/kfd</code>; mainline Linux support</td>
+        </tr>
+        <tr>
+          <td>NCCL 2.29: <code>NCCL_IPC_USE_ABSTRACT_SOCKET</code> documentation</td>
+          <td>2026</td>
+          <td>NVIDIA acknowledges container IPC problem; env var toggle for abstract vs filesystem UDS</td>
+        </tr>
+        <tr>
+          <td>NVIDIA IMEX Daemon Guide</td>
+          <td>2025&ndash;2026</td>
+          <td>GB200 NVL72 only; proprietary; requires NVSwitch + Grace; confirms XTrans addresses a different (broader) problem</td>
+        </tr>
+        <tr>
+          <td>NVIDIA DRA Driver for GPUs + ComputeDomains</td>
+          <td>2026</td>
+          <td>K8s integration for IMEX; donated to CNCF; namespace-based isolation model</td>
+        </tr>
+        <tr>
+          <td>Habana Gaudi Architecture Documentation</td>
+          <td>2025</td>
+          <td>24 integrated RoCE v2 RDMA NIC ports per Gaudi; scale-up via dedicated network, not host SHM</td>
+        </tr>
+        <tr>
+          <td>Guardian: PTX-level Bounds Checking for Multi-Tenant GPU Memory Safety</td>
+          <td>2024</td>
+          <td>Compute isolation for GPUs; complementary to XTrans&rsquo;s communication isolation</td>
+        </tr>
+        <tr>
+          <td>FUSE Performance Study (Vangoor et al., ACM TOS)</td>
+          <td>2019</td>
+          <td>FUSE overhead characterization; informs alternative interception mechanism comparison</td>
+        </tr>
+        <tr>
+          <td>gVisor seccomp-bpf Optimization</td>
+          <td>2024</td>
+          <td>seccomp-bpf adds ~3.6% overhead; cannot modify syscall return values (limitation for XTrans)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Appendix B: Glossary</h2>
+
+    <table>
+      <thead>
+        <tr><th>Term</th><th>Definition</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>CCL</b></td><td>Collective Communication Library (NCCL, RCCL, oneCCL, HCCL, Gloo)</td></tr>
+        <tr><td><b>cuMem VMM</b></td><td>CUDA Virtual Memory Management API; enables FD-based GPU memory IPC</td></tr>
+        <tr><td><b>HSA IPC</b></td><td>AMD&rsquo;s Heterogeneous System Architecture IPC for GPU memory sharing</td></tr>
+        <tr><td><b>L0 IPC</b></td><td>Intel Level Zero IPC handles for GPU memory sharing</td></tr>
+        <tr><td><b>SCM_RIGHTS</b></td><td>Unix domain socket ancillary data for passing file descriptors between processes</td></tr>
+        <tr><td><b>DMA-BUF</b></td><td>Linux kernel subsystem for sharing buffers between devices/drivers via file descriptors; potential universal cross-container GPU IPC primitive</td></tr>
+        <tr><td><b>KFD</b></td><td>Kernel Fusion Driver &mdash; AMD&rsquo;s kernel driver for GPU compute (<code>/dev/kfd</code>)</td></tr>
+        <tr><td><b>UDS</b></td><td>Unix Domain Socket</td></tr>
+        <tr><td><b>DRA</b></td><td>Dynamic Resource Allocation (Kubernetes API for device management)</td></tr>
+        <tr><td><b>IMEX</b></td><td>Internode Memory Exchange (NVIDIA daemon for NVLink fabric communication)</td></tr>
+        <tr><td><b>xGMI</b></td><td>AMD&rsquo;s inter-die Global Memory Interconnect (Infinity Fabric for GPUs)</td></tr>
+        <tr><td><b>UALink</b></td><td>Ultra Accelerator Link (open standard GPU interconnect, 1.0 spec April 2025)</td></tr>
+        <tr><td><b>XTrans</b></td><td>Cross-container Transport &mdash; the system proposed in this plan</td></tr>
+      </tbody>
+    </table>
+
+  </main>
+</body>
+</html>
